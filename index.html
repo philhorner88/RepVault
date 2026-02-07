@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>RepVault</title>
+
+  <!-- PWA Meta -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0a0a0f">
+  <meta name="background-color" content="#0a0a0f">
+
+  <!-- iOS PWA Meta -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="RepVault">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      background: #0a0a0f; color: #e8e8f0; font-family: 'Outfit', sans-serif;
+      overflow-x: hidden; -webkit-font-smoothing: antialiased;
+      padding-top: env(safe-area-inset-top);
+    }
+    input, select, textarea { font-family: 'JetBrains Mono', monospace; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 2px; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes countPulse { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
+    .fade-in { animation: fadeIn 0.3s ease-out; }
+    .slide-up { animation: slideUp 0.4s ease-out; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+
+  <script>
+    // ============================================================
+    // REPVAULT - Production PWA Build
+    // ============================================================
+    const { useState, useEffect, useRef, useCallback, useMemo, createContext, useContext, createElement: h, Fragment } = React;
+
+    const STORAGE_KEY = "repvault_v2_master";
+    const PHASES = { PREP: "PREP", WORK: "WORK", REST_SET: "REST_SET", REST_EX: "REST_EX", DONE: "DONE" };
+    const DEFAULT_TIMERS = { prep: 10, work: 45, restSet: 90, restEx: 120 };
+    const SETS_PER_EXERCISE = 4;
+    const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+    const MUSCLE_MAP = {
+      chest: ["bench", "press", "fly", "flye", "push up", "pushup", "pec", "dip", "crossover", "chest"],
+      back: ["row", "pull", "lat", "deadlift", "chin up", "chinup", "pulldown", "pullup", "back ext", "shrug", "face pull", "rear delt"],
+      shoulders: ["shoulder", "ohp", "military", "lateral raise", "front raise", "arnold", "delt", "upright row"],
+      biceps: ["bicep", "curl", "hammer", "preacher", "concentration"],
+      triceps: ["tricep", "pushdown", "skull", "close grip", "kickback", "extension"],
+      legs: ["squat", "leg press", "lunge", "calf", "hamstring", "quad", "glute", "hip thrust", "leg curl", "leg ext", "rdl", "split squat", "step up", "goblet"],
+      core: ["ab", "crunch", "plank", "sit up", "situp", "core", "oblique", "russian twist", "leg raise", "hollow", "woodchop", "pallof"],
+      cardio: ["run", "bike", "swim", "cycle", "jog", "sprint", "elliptical", "stair", "walk", "treadmill", "hiit"],
+    };
+    const CARDIO_LIST = ["run", "bike", "swim", "cycle", "jog", "sprint", "elliptical", "stair", "walk", "treadmill", "rowing machine"];
+
+    function detectMuscle(name) {
+      const l = name.toLowerCase();
+      for (const [g, kw] of Object.entries(MUSCLE_MAP)) { if (kw.some(k => l.includes(k))) return g; }
+      return "other";
+    }
+    function isCardio(name) { const l = name.toLowerCase(); return CARDIO_LIST.some(k => l.includes(k)); }
+    function deepClone(o) { try { return JSON.parse(JSON.stringify(o, (_, v) => typeof v === "number" && isNaN(v) ? null : v)); } catch { return {}; } }
+    function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+    function fmtTime(s) { if (s < 0) s = 0; return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, "0")}`; }
+    function fmtDur(s) { const hr = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60); return hr > 0 ? `${hr}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`; }
+
+    const C = {
+      bg: "#0a0a0f", surface: "#12121a", surfaceLight: "#1a1a28", border: "#2a2a3a",
+      text: "#e8e8f0", textDim: "#8888a0",
+      cyan: "#00e5ff", cyanDim: "#00e5ff40", green: "#39ff14", greenDim: "#39ff1440",
+      amber: "#ffb300", amberDim: "#ffb30040", red: "#ff3d3d", redDim: "#ff3d3d40", purple: "#b388ff",
+    };
+    const phaseColor = { [PHASES.PREP]: C.amber, [PHASES.WORK]: C.cyan, [PHASES.REST_SET]: C.green, [PHASES.REST_EX]: C.purple, [PHASES.DONE]: C.green };
+
+    // --- Storage ---
+    function loadDB() {
+      try { const d = localStorage.getItem(STORAGE_KEY); if (d) return JSON.parse(d); } catch {}
+      // Legacy scan
+      try {
+        const keys = ["ironfocus_data", "ironfocus_history", "ironfocus_blueprints", "ironfocus_v2_master"];
+        let merged = emptyDB();
+        for (const k of keys) {
+          try { const r = localStorage.getItem(k); if (r) { const d = JSON.parse(r); if (d.history) merged.history.push(...d.history); if (d.blueprints) Object.assign(merged.blueprints, d.blueprints); if (d.pbs) Object.assign(merged.pbs, d.pbs); } } catch {}
+        }
+        if (merged.history.length > 0 || Object.keys(merged.blueprints).length > 0) return merged;
+      } catch {}
+      return emptyDB();
+    }
+    function saveDB(db) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(deepClone(db))); } catch (e) { console.error("Save failed:", e); } }
+    function emptyDB() { return { history: [], blueprints: {}, pbs: {}, settings: { timers: { ...DEFAULT_TIMERS }, audioEnabled: true } }; }
+
+    // --- Audio Engine ---
+    class AudioEngine {
+      constructor() { this.ctx = null; this.enabled = true; this.hb = null; }
+      init() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); if (this.ctx.state === "suspended") this.ctx.resume(); }
+      pip(f = 880, d = 0.08) { if (!this.enabled || !this.ctx) return; const o = this.ctx.createOscillator(), g = this.ctx.createGain(); o.connect(g); g.connect(this.ctx.destination); o.frequency.value = f; o.type = "sine"; g.gain.setValueAtTime(0.3, this.ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + d); o.start(this.ctx.currentTime); o.stop(this.ctx.currentTime + d); }
+      countdownPip() { this.pip(1200, 0.06); }
+      phasePip() { this.pip(660, 0.15); }
+      speak(t) { if (!this.enabled || !window.speechSynthesis) return; window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(t); u.rate = 1.1; u.pitch = 0.9; u.volume = 0.8; window.speechSynthesis.speak(u); }
+      startHeartbeat() { if (this.hb) return; this.init(); this.hb = setInterval(() => { if (!this.ctx) return; const o = this.ctx.createOscillator(), g = this.ctx.createGain(); o.connect(g); g.connect(this.ctx.destination); g.gain.setValueAtTime(0.001, this.ctx.currentTime); o.start(this.ctx.currentTime); o.stop(this.ctx.currentTime + 0.01); }, 10000); }
+      stopHeartbeat() { if (this.hb) { clearInterval(this.hb); this.hb = null; } }
+      toggle() { this.enabled = !this.enabled; return this.enabled; }
+    }
+    const audio = new AudioEngine();
+
+    function updateMedia(title, artist) { if ("mediaSession" in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: "RepVault" }); } catch {} } }
+
+    const AppCtx = createContext(null);
+
+    // ============================================================
+    // MAIN APP
+    // ============================================================
+    function App() {
+      const [db, setDb] = useState(() => loadDB());
+      const [screen, setScreen] = useState("home");
+      const [wo, setWo] = useState(null);
+      const [notif, setNotif] = useState(null);
+
+      const persist = useCallback((updater) => {
+        setDb(prev => { const next = typeof updater === "function" ? updater(prev) : updater; saveDB(next); return next; });
+      }, []);
+      const notify = useCallback((msg, type = "info") => { setNotif({ msg, type, id: Date.now() }); setTimeout(() => setNotif(null), 2500); }, []);
+
+      const ctx = { db, persist, notify, screen, setScreen, wo, setWo };
+
+      return h(AppCtx.Provider, { value: ctx },
+        notif && h(Toast, notif),
+        screen === "home" && h(Home),
+        screen === "train" && h(Train),
+        screen === "blueprints" && h(Blueprints),
+        screen === "history" && h(History),
+        screen === "analytics" && h(Analytics),
+        screen === "settings" && h(Settings),
+        screen === "export" && h(Export),
+        screen !== "train" && h(NavBar),
+      );
+    }
+
+    // --- Toast ---
+    function Toast({ msg, type }) {
+      const colors = { info: C.cyan, success: C.green, error: C.red, warn: C.amber };
+      return h("div", { className: "slide-up", style: {
+        position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", background: C.surface,
+        border: `1px solid ${colors[type] || C.cyan}`, color: colors[type] || C.cyan,
+        padding: "10px 20px", borderRadius: 12, fontSize: 13, fontWeight: 500, zIndex: 9999,
+        maxWidth: "90%", textAlign: "center", boxShadow: `0 4px 20px ${(colors[type] || C.cyan)}30`,
+      }}, msg);
+    }
+
+    // --- NavBar ---
+    function NavBar() {
+      const { screen, setScreen } = useContext(AppCtx);
+      const items = [
+        { id: "home", icon: "⚡", label: "Home" }, { id: "blueprints", icon: "📋", label: "Plans" },
+        { id: "history", icon: "📊", label: "History" }, { id: "analytics", icon: "📈", label: "Stats" },
+        { id: "settings", icon: "⚙️", label: "Settings" },
+      ];
+      return h("div", { style: {
+        position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 500,
+        background: `${C.surface}f0`, borderTop: `1px solid ${C.border}`, display: "flex",
+        padding: "6px 0 env(safe-area-inset-bottom, 8px)", backdropFilter: "blur(20px)", zIndex: 100,
+      }}, items.map(it => h("button", { key: it.id, onClick: () => setScreen(it.id), style: {
+        flex: 1, background: "none", border: "none", color: screen === it.id ? C.cyan : C.textDim,
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "6px 0", cursor: "pointer",
+      }}, h("span", { style: { fontSize: 18 } }, it.icon), h("span", { style: { fontSize: 10, fontWeight: screen === it.id ? 600 : 400 } }, it.label))));
+    }
+
+    // ============================================================
+    // HOME
+    // ============================================================
+    function Home() {
+      const { db, setScreen, setWo, notify } = useContext(AppCtx);
+      const [quickText, setQuickText] = useState("");
+      const [showQuick, setShowQuick] = useState(false);
+
+      const todayIdx = new Date().getDay();
+      const todayName = DAYS[todayIdx === 0 ? 6 : todayIdx - 1];
+      const todayBP = db.blueprints?.[todayName];
+
+      const weekHistory = db.history.filter(x => (Date.now() - new Date(x.date).getTime()) / 864e5 <= 7);
+      const totalVol = weekHistory.reduce((s, x) => s + (x.exercises || []).reduce((es, ex) => es + (ex.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0), 0);
+
+      function makeExercises(names) {
+        return names.map(name => ({
+          id: genId(), name, muscle: detectMuscle(name), isCardio: isCardio(name),
+          sets: isCardio(name) ? [{ id: genId(), duration: 0, completed: false }]
+            : Array.from({ length: SETS_PER_EXERCISE }, () => ({ id: genId(), weight: 0, reps: 0, completed: false })),
+        }));
+      }
+
+      function startBP(bp) { setWo({ id: genId(), exercises: makeExercises(bp.exercises.map(e => e.name)), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
+      function startQuick() { if (!quickText.trim()) return; const lines = quickText.split("\n").map(l => l.trim()).filter(Boolean); setWo({ id: genId(), exercises: makeExercises(lines), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify(`Loaded ${lines.length} exercises`, "success"); }
+      function startEmpty() { setWo({ id: genId(), exercises: [], currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
+
+      return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
+        // Header
+        h("div", { style: { textAlign: "center", padding: "30px 0 20px" } },
+          h("h1", { style: { fontSize: 36, fontWeight: 900, letterSpacing: -1, background: `linear-gradient(135deg, ${C.cyan}, ${C.green})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" } }, "REPVAULT"),
+          h("p", { style: { color: C.textDim, fontSize: 13, marginTop: 4, fontWeight: 300 } }, "Your Training. Locked In."),
+        ),
+        // Weekly summary
+        h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 16 } },
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "This Week"),
+          h("div", { style: { display: "flex", gap: 16 } },
+            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, weekHistory.length), h("div", { style: { fontSize: 11, color: C.textDim } }, "Sessions")),
+            h("div", { style: { width: 1, background: C.border } }),
+            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, totalVol > 1000 ? `${(totalVol / 1000).toFixed(1)}k` : totalVol), h("div", { style: { fontSize: 11, color: C.textDim } }, "Volume (kg)")),
+            h("div", { style: { width: 1, background: C.border } }),
+            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.amber, fontFamily: "'JetBrains Mono'" } }, Object.keys(db.pbs || {}).length), h("div", { style: { fontSize: 11, color: C.textDim } }, "PBs")),
+          ),
+        ),
+        // Today's blueprint
+        todayBP && h("button", { onClick: () => startBP(todayBP), style: { width: "100%", background: `linear-gradient(135deg, ${C.cyan}15, ${C.green}15)`, border: `1px solid ${C.cyan}40`, borderRadius: 16, padding: 20, color: C.text, cursor: "pointer", textAlign: "left", marginBottom: 16 } },
+          h("div", { style: { fontSize: 11, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 } }, `${todayName}'s Plan`),
+          h("div", { style: { fontSize: 18, fontWeight: 700, marginBottom: 8 } }, todayBP.name || `${todayName} Session`),
+          h("div", { style: { fontSize: 12, color: C.textDim } }, `${todayBP.exercises?.length || 0} exercises • Tap to start`),
+        ),
+        // Quick start buttons
+        h("div", { style: { display: "flex", gap: 10, marginBottom: 16 } },
+          h("button", { onClick: () => setShowQuick(!showQuick), style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 12px", color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 } }, "📝 Bulk Import"),
+          h("button", { onClick: startEmpty, style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 12px", color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 } }, "➕ Empty Session"),
+        ),
+        // Bulk import
+        showQuick && h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}`, marginBottom: 16 } },
+          h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 8 } }, "One exercise per line:"),
+          h("textarea", { value: quickText, onChange: e => setQuickText(e.target.value), placeholder: "Bench Press\nLat Pulldown\nSquat\nBicep Curl", rows: 6, style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 14, resize: "none", outline: "none" } }),
+          h("button", { onClick: startQuick, style: { width: "100%", marginTop: 10, background: C.cyan, color: C.bg, border: "none", borderRadius: 10, padding: 14, fontSize: 15, fontWeight: 700, cursor: "pointer" } }, "Load & Start"),
+        ),
+        // Export
+        h("button", { onClick: () => setScreen("export"), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, color: C.textDim, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "📤 Export AI-Ready Data"),
+      );
+    }
+
+    // ============================================================
+    // TRAINING SCREEN
+    // ============================================================
+    function Train() {
+      const { db, persist, notify, setScreen, wo: initWo, setWo: setGlobalWo } = useContext(AppCtx);
+      const [wo, setWo] = useState(initWo);
+      const [phase, setPhase] = useState(PHASES.PREP);
+      const [timer, setTimer] = useState(db.settings?.timers?.prep || DEFAULT_TIMERS.prep);
+      const [paused, setPaused] = useState(false);
+      const [clock, setClock] = useState(0);
+      const [showAdd, setShowAdd] = useState(false);
+      const [addText, setAddText] = useState("");
+
+      const timerRef = useRef(null);
+      const clockRef = useRef(null);
+      const lastTick = useRef(Date.now());
+      const backRef = useRef(0);
+      const timers = db.settings?.timers || DEFAULT_TIMERS;
+      const curEx = wo?.exercises[wo.currentExIdx];
+      const totalSets = wo ? wo.exercises.reduce((s, e) => s + e.sets.length, 0) : 0;
+      const doneSets = wo ? wo.exercises.reduce((s, e) => s + e.sets.filter(x => x.completed).length, 0) : 0;
+
+      const curPB = curEx ? db.pbs?.[curEx.name.toLowerCase()] : null;
+      const lastPerf = useMemo(() => {
+        if (!curEx) return null;
+        const nm = curEx.name.toLowerCase();
+        for (let i = db.history.length - 1; i >= 0; i--) { const ex = db.history[i].exercises?.find(e => e.name.toLowerCase() === nm); if (ex) return { date: db.history[i].date, vol: ex.sets.reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0) }; }
+        return null;
+      }, [curEx?.name, db.history]);
+
+      function updateSet(ei, si, field, val) {
+        setWo(prev => {
+          const next = deepClone(prev);
+          next.exercises[ei].sets[si][field] = val;
+          if (field === "weight" && si === 0) { for (let i = 1; i < next.exercises[ei].sets.length; i++) { if (!next.exercises[ei].sets[i].weight) next.exercises[ei].sets[i].weight = val; } }
+          return next;
+        });
+      }
+
+      useEffect(() => { audio.init(); audio.startHeartbeat(); return () => audio.stopHeartbeat(); }, []);
+
+      useEffect(() => {
+        if (paused || phase === PHASES.DONE) return;
+        lastTick.current = Date.now();
+        timerRef.current = setInterval(() => {
+          const now = Date.now(), el = (now - lastTick.current) / 1000;
+          lastTick.current = now;
+          setTimer(prev => {
+            const n = prev - el;
+            if (n <= 3.1 && n > 2.9) audio.countdownPip();
+            if (n <= 2.1 && n > 1.9) audio.countdownPip();
+            if (n <= 1.1 && n > 0.9) audio.countdownPip();
+            if (n <= 0) { audio.phasePip(); advancePhase(); return 0; }
+            return n;
+          });
+        }, 100);
+        return () => clearInterval(timerRef.current);
+      }, [phase, paused, wo?.currentExIdx, wo?.currentSetIdx]);
+
+      useEffect(() => { clockRef.current = setInterval(() => setClock(Math.floor((Date.now() - wo.startTime) / 1000)), 1000); return () => clearInterval(clockRef.current); }, [wo?.startTime]);
+
+      useEffect(() => { if (curEx) updateMedia(`${curEx.name} - Set ${wo.currentSetIdx + 1}`, `${phase} • ${fmtTime(timer)}`); }, [phase, timer, curEx?.name, wo?.currentSetIdx]);
+
+      function advancePhase() {
+        const ex = wo.exercises[wo.currentExIdx];
+        if (!ex) { finish(); return; }
+        if (phase === PHASES.PREP) { setPhase(PHASES.WORK); setTimer(timers.work); audio.speak(`${ex.name}, Set ${wo.currentSetIdx + 1}, Work`); }
+        else if (phase === PHASES.WORK) {
+          setWo(prev => { const n = deepClone(prev); if (n.exercises[n.currentExIdx]?.sets[n.currentSetIdx]) n.exercises[n.currentExIdx].sets[n.currentSetIdx].completed = true; return n; });
+          const lastSet = wo.currentSetIdx >= ex.sets.length - 1, lastEx = wo.currentExIdx >= wo.exercises.length - 1;
+          if (lastSet && lastEx) { setPhase(PHASES.DONE); setTimer(0); audio.speak("Workout Complete"); }
+          else if (lastSet) { setPhase(PHASES.REST_EX); setTimer(timers.restEx); audio.speak("Rest between exercises"); }
+          else { setPhase(PHASES.REST_SET); setTimer(timers.restSet); audio.speak(`Rest. Next: Set ${wo.currentSetIdx + 2}`); }
+        }
+        else if (phase === PHASES.REST_SET) { setWo(prev => ({ ...prev, currentSetIdx: prev.currentSetIdx + 1 })); setPhase(PHASES.WORK); setTimer(timers.work); audio.speak(`${ex.name}, Set ${wo.currentSetIdx + 2}, Work`); }
+        else if (phase === PHASES.REST_EX) { const ni = wo.currentExIdx + 1; setWo(prev => ({ ...prev, currentExIdx: ni, currentSetIdx: 0 })); setPhase(PHASES.PREP); setTimer(timers.prep); const ne = wo.exercises[ni]; if (ne) audio.speak(`Next: ${ne.name}`); }
+      }
+
+      function skip() { clearInterval(timerRef.current); advancePhase(); }
+
+      function goBack() {
+        const now = Date.now();
+        if (timer > 3 || now - backRef.current > 2000) {
+          backRef.current = now;
+          if (phase === PHASES.WORK) setTimer(timers.work); else if (phase === PHASES.REST_SET) setTimer(timers.restSet);
+          else if (phase === PHASES.REST_EX) setTimer(timers.restEx); else if (phase === PHASES.PREP) setTimer(timers.prep);
+        } else {
+          if (wo.currentSetIdx > 0) { setWo(prev => ({ ...prev, currentSetIdx: prev.currentSetIdx - 1 })); setPhase(PHASES.WORK); setTimer(timers.work); }
+          else if (wo.currentExIdx > 0) { const pi = wo.currentExIdx - 1; setWo(prev => ({ ...prev, currentExIdx: pi, currentSetIdx: prev.exercises[pi].sets.length - 1 })); setPhase(PHASES.WORK); setTimer(timers.work); }
+        }
+      }
+
+      function finish() {
+        const session = { id: wo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - wo.startTime) / 1000), exercises: wo.exercises.map(e => ({ name: e.name, muscle: e.muscle, isCardio: e.isCardio, sets: e.sets.map(s => ({ weight: s.weight || 0, reps: s.reps || 0, duration: s.duration || 0, completed: s.completed })) })) };
+        const newPBs = { ...(db.pbs || {}) };
+        session.exercises.forEach(ex => { const k = ex.name.toLowerCase(); const b = newPBs[k] || { maxWeight: 0, maxVolume: 0, maxReps: 0 }; ex.sets.forEach(s => { if (s.weight > b.maxWeight) b.maxWeight = s.weight; if (s.reps > b.maxReps) b.maxReps = s.reps; }); const v = ex.sets.reduce((s, st) => s + st.weight * st.reps, 0); if (v > b.maxVolume) b.maxVolume = v; newPBs[k] = b; });
+        persist(prev => ({ ...prev, history: [...prev.history, session], pbs: newPBs }));
+        notify("Workout saved! 💪", "success"); setGlobalWo(null); setScreen("home");
+      }
+
+      function addExercise(bulk) {
+        if (!addText.trim()) return;
+        const lines = bulk ? addText.split("\n").map(l => l.trim()).filter(Boolean) : [addText.trim()];
+        const newExs = lines.map(name => ({ id: genId(), name, muscle: detectMuscle(name), isCardio: isCardio(name), sets: isCardio(name) ? [{ id: genId(), duration: 0, completed: false }] : Array.from({ length: SETS_PER_EXERCISE }, () => ({ id: genId(), weight: 0, reps: 0, completed: false })) }));
+        setWo(prev => ({ ...prev, exercises: [...prev.exercises, ...newExs] }));
+        setAddText(""); setShowAdd(false); notify(`Added ${newExs.length} exercise(s)`, "success");
+      }
+
+      if (!wo) return null;
+      const glow = phaseColor[phase] || C.cyan;
+      const prog = totalSets > 0 ? doneSets / totalSets : 0;
+
+      return h("div", { style: { minHeight: "100vh", background: C.bg, paddingBottom: 160, maxWidth: 500, margin: "0 auto" } },
+        // Top bar
+        h("div", { style: { padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.border}` } },
+          h("span", { style: { fontSize: 11, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, `⏱ ${fmtDur(clock)}`),
+          h("span", { style: { fontSize: 11, color: C.textDim } }, `${doneSets}/${totalSets} sets`),
+          h("button", { onClick: () => { audio.toggle(); notify(audio.enabled ? "Audio ON" : "Audio OFF"); }, style: { background: "none", border: "none", color: audio.enabled ? C.cyan : C.textDim, fontSize: 18, cursor: "pointer" } }, audio.enabled ? "🔊" : "🔇"),
+        ),
+        // Progress
+        h("div", { style: { height: 3, background: C.border } }, h("div", { style: { height: "100%", width: `${prog * 100}%`, background: C.green, transition: "width 0.5s" } })),
+        // Timer display
+        phase !== PHASES.DONE && curEx && h("div", { className: "fade-in", style: { textAlign: "center", padding: "24px 16px 8px" } },
+          h("div", { style: { display: "inline-block", padding: "4px 16px", borderRadius: 20, background: `${glow}15`, border: `1px solid ${glow}40`, color: glow, fontSize: 12, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase", marginBottom: 12 } }, phase.replace("_", " ")),
+          h("div", { style: { fontSize: 72, fontWeight: 700, color: glow, fontFamily: "'JetBrains Mono'", animation: timer <= 3 ? "countPulse 0.5s ease infinite" : "none", textShadow: `0 0 40px ${glow}40` } }, fmtTime(timer)),
+          h("div", { style: { fontSize: 20, fontWeight: 700, marginTop: 4 } }, curEx.name),
+          h("div", { style: { fontSize: 13, color: C.textDim, marginTop: 2 } }, `Set ${wo.currentSetIdx + 1} of ${curEx.sets.length} • ${curEx.muscle}`),
+        ),
+        // Done
+        phase === PHASES.DONE && h("div", { style: { textAlign: "center", padding: "40px 16px" } },
+          h("div", { style: { fontSize: 48 } }, "🏆"),
+          h("h2", { style: { fontSize: 28, fontWeight: 800, color: C.green, marginTop: 12 } }, "Complete!"),
+          h("p", { style: { color: C.textDim, marginTop: 4 } }, `${fmtDur(clock)} • ${doneSets} sets`),
+          h("button", { onClick: finish, style: { marginTop: 24, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
+        ),
+        // Set inputs
+        curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "12px 16px" } },
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
+            (curPB || lastPerf) && h("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+              curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 8, padding: "8px 10px", border: `1px solid ${C.amber}30`, fontSize: 11 } }, h("span", { style: { color: C.amber } }, "🏆 PB"), h("span", { style: { color: C.textDim, marginLeft: 6 } }, `${curPB.maxWeight}kg • ${curPB.maxReps}r`)),
+              lastPerf && h("div", { style: { flex: 1, background: `${C.cyan}10`, borderRadius: 8, padding: "8px 10px", border: `1px solid ${C.cyan}30`, fontSize: 11 } }, h("span", { style: { color: C.cyan } }, "📅 Last"), h("span", { style: { color: C.textDim, marginLeft: 6 } }, `${lastPerf.vol}kg vol`)),
+            ),
+            h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+              curEx.sets.map((s, si) => h("div", { key: si, style: { display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 10, background: si === wo.currentSetIdx ? `${glow}10` : "transparent", border: si === wo.currentSetIdx ? `1px solid ${glow}30` : "1px solid transparent", opacity: s.completed ? 0.5 : 1 } },
+                h("div", { style: { width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: "'JetBrains Mono'", background: s.completed ? C.green : C.bg, color: s.completed ? C.bg : C.textDim, border: `1px solid ${s.completed ? C.green : C.border}` } }, s.completed ? "✓" : si + 1),
+                h("div", { style: { flex: 1, display: "flex", gap: 8 } },
+                  h("input", { type: "number", inputMode: "decimal", value: s.weight || "", onChange: e => updateSet(wo.currentExIdx, si, "weight", parseFloat(e.target.value) || 0), placeholder: "KG", style: { width: "100%", background: C.bg, border: `1px solid ${C.cyanDim}`, borderRadius: 8, padding: "10px 8px", color: C.cyan, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  h("input", { type: "number", inputMode: "numeric", value: s.reps || "", onChange: e => updateSet(wo.currentExIdx, si, "reps", parseInt(e.target.value) || 0), placeholder: "Reps", style: { width: "100%", background: C.bg, border: `1px solid ${C.greenDim}`, borderRadius: 8, padding: "10px 8px", color: C.green, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                ),
+              )),
+            ),
+          ),
+        ),
+        // Cardio input
+        curEx?.isCardio && phase !== PHASES.DONE && h("div", { style: { padding: "12px 16px" } },
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, textAlign: "center" } },
+            h("div", { style: { fontSize: 13, color: C.textDim, marginBottom: 8 } }, "Duration (minutes)"),
+            h("input", { type: "number", inputMode: "numeric", value: curEx.sets[0]?.duration || "", onChange: e => updateSet(wo.currentExIdx, 0, "duration", parseInt(e.target.value) || 0), placeholder: "30", style: { width: 120, background: C.bg, border: `1px solid ${C.amberDim}`, borderRadius: 12, padding: 14, color: C.amber, fontSize: 28, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+          ),
+        ),
+        // Queue
+        h("div", { style: { padding: "8px 16px" } },
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingLeft: 4 } }, `Queue (${Math.max(0, wo.exercises.length - wo.currentExIdx - 1)} remaining)`),
+          wo.exercises.slice(wo.currentExIdx + 1).map((ex, i) => h("div", { key: ex.id, style: { padding: "10px 14px", borderRadius: 10, background: C.surface, border: `1px solid ${C.border}`, fontSize: 13, color: C.textDim, display: "flex", justifyContent: "space-between", marginBottom: 4 } }, h("span", null, ex.name), h("span", { style: { fontSize: 11 } }, ex.isCardio ? "cardio" : `${ex.sets.length} sets`))),
+        ),
+        // Add exercise
+        h("div", { style: { padding: "8px 16px" } },
+          h("button", { onClick: () => setShowAdd(true), style: { width: "100%", background: "none", border: `1px dashed ${C.border}`, borderRadius: 10, padding: 12, color: C.textDim, cursor: "pointer", fontSize: 13 } }, "+ Add Exercise"),
+        ),
+        // Add modal
+        showAdd && h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }, onClick: e => { if (e.target === e.currentTarget) setShowAdd(false); } },
+          h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 20, padding: 24, width: "100%", maxWidth: 400, border: `1px solid ${C.border}` } },
+            h("h3", { style: { fontSize: 16, fontWeight: 700, marginBottom: 12 } }, "Add Exercises"),
+            h("textarea", { value: addText, onChange: e => setAddText(e.target.value), placeholder: "Exercise name\n(one per line for bulk)", rows: 4, autoFocus: true, style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 14, resize: "none", outline: "none" } }),
+            h("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
+              h("button", { onClick: () => addExercise(false), style: { flex: 1, background: C.cyan, color: C.bg, border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer" } }, "Single"),
+              h("button", { onClick: () => addExercise(true), style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer" } }, "Bulk"),
+            ),
+          ),
+        ),
+        // ACTION ZONE
+        phase !== PHASES.DONE && h("div", { style: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 500, padding: "16px 20px env(safe-area-inset-bottom, 16px)", background: `${C.surface}f5`, borderTop: `1px solid ${C.border}`, backdropFilter: "blur(20px)", display: "flex", gap: 12, justifyContent: "center", alignItems: "center", zIndex: 100 } },
+          h("button", { onClick: goBack, style: { width: 64, height: 64, borderRadius: "50%", background: C.bg, border: `2px solid ${C.border}`, color: C.text, fontSize: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏮"),
+          h("button", { onClick: () => setPaused(!paused), style: { width: 80, height: 80, borderRadius: "50%", background: paused ? C.green : C.amber, border: "none", color: C.bg, fontSize: 28, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `0 0 30px ${paused ? C.greenDim : C.amberDim}` } }, paused ? "▶" : "⏸"),
+          h("button", { onClick: skip, style: { width: 64, height: 64, borderRadius: "50%", background: C.bg, border: `2px solid ${C.border}`, color: C.text, fontSize: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏭"),
+        ),
+      );
+    }
+
+    // ============================================================
+    // BLUEPRINTS
+    // ============================================================
+    function Blueprints() {
+      const { db, persist, notify, setWo, setScreen } = useContext(AppCtx);
+      const [day, setDay] = useState(DAYS[0]);
+      const [editName, setEditName] = useState("");
+      const [editExs, setEditExs] = useState("");
+      const [editing, setEditing] = useState(false);
+      const bp = db.blueprints?.[day];
+
+      function startEdit() { setEditName(bp?.name || `${day} Session`); setEditExs(bp?.exercises?.map(e => e.name).join("\n") || ""); setEditing(true); }
+      function save() {
+        const lines = editExs.split("\n").map(l => l.trim()).filter(Boolean);
+        const exs = lines.map(name => ({ name, muscle: detectMuscle(name), isCardio: isCardio(name), duration: isCardio(name) ? 30 : undefined }));
+        persist(prev => ({ ...prev, blueprints: { ...prev.blueprints, [day]: { name: editName, exercises: exs } } }));
+        setEditing(false); notify("Blueprint saved", "success");
+      }
+      function load() {
+        if (!bp?.exercises?.length) return;
+        const exs = bp.exercises.map(e => ({ id: genId(), name: e.name, muscle: detectMuscle(e.name), isCardio: isCardio(e.name), sets: isCardio(e.name) ? [{ id: genId(), duration: e.duration || 0, completed: false }] : Array.from({ length: SETS_PER_EXERCISE }, () => ({ id: genId(), weight: 0, reps: 0, completed: false })) }));
+        setWo({ id: genId(), exercises: exs, currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify("Blueprint loaded!", "success");
+      }
+
+      return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
+        h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "Weekly Blueprint"),
+        h("div", { style: { display: "flex", gap: 4, overflowX: "auto", marginBottom: 16, paddingBottom: 4 } },
+          DAYS.map(d => h("button", { key: d, onClick: () => { setDay(d); setEditing(false); }, style: { padding: "8px 14px", borderRadius: 10, fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", cursor: "pointer", border: "none", background: day === d ? C.cyan : C.surface, color: day === d ? C.bg : C.textDim } }, d.slice(0, 3))),
+        ),
+        !editing ? h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` } },
+          h("div", { style: { fontSize: 16, fontWeight: 700, marginBottom: 12 } }, bp?.name || `${day} — No plan`),
+          bp?.exercises?.length > 0 ? h(Fragment, null,
+            h("div", { style: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 } },
+              bp.exercises.map((ex, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", padding: "8px 12px", background: C.bg, borderRadius: 8, fontSize: 13 } }, h("span", null, ex.name), h("span", { style: { color: C.textDim, fontSize: 11 } }, ex.muscle || detectMuscle(ex.name)))),
+            ),
+            h("div", { style: { display: "flex", gap: 8 } },
+              h("button", { onClick: load, style: { flex: 1, background: C.cyan, color: C.bg, border: "none", borderRadius: 10, padding: 14, fontWeight: 700, cursor: "pointer" } }, "Load & Start"),
+              h("button", { onClick: startEdit, style: { flex: 1, background: C.bg, color: C.text, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, fontWeight: 600, cursor: "pointer" } }, "Edit"),
+            ),
+          ) : h("button", { onClick: startEdit, style: { width: "100%", background: `${C.cyan}15`, border: `1px dashed ${C.cyan}40`, borderRadius: 10, padding: 16, color: C.cyan, cursor: "pointer", fontSize: 14, fontWeight: 600 } }, "+ Create Plan"),
+        ) : h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` } },
+          h("input", { value: editName, onChange: e => setEditName(e.target.value), placeholder: "Session Name", style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 15, marginBottom: 12, outline: "none" } }),
+          h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 6 } }, "Exercises (one per line):"),
+          h("textarea", { value: editExs, onChange: e => setEditExs(e.target.value), rows: 8, placeholder: "Bench Press\nLat Pulldown\nLeg Press", style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 14, resize: "none", outline: "none" } }),
+          h("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
+            h("button", { onClick: save, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 10, padding: 14, fontWeight: 700, cursor: "pointer" } }, "Save"),
+            h("button", { onClick: () => setEditing(false), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, fontWeight: 600, cursor: "pointer" } }, "Cancel"),
+          ),
+        ),
+      );
+    }
+
+    // ============================================================
+    // HISTORY
+    // ============================================================
+    function History() {
+      const { db, persist, notify } = useContext(AppCtx);
+      const [expanded, setExpanded] = useState(null);
+      const [editId, setEditId] = useState(null);
+      const [addMuscle, setAddMuscle] = useState("");
+      const [addSets, setAddSets] = useState(4);
+
+      const sorted = [...db.history].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+      function addToSession(sid) {
+        if (!addMuscle) return;
+        persist(prev => ({ ...prev, history: prev.history.map(x => x.id !== sid ? x : { ...x, exercises: [...(x.exercises || []), { name: `${addMuscle} (manual)`, muscle: addMuscle, isCardio: false, sets: Array.from({ length: addSets }, () => ({ weight: 0, reps: 0, completed: true })) }] }) }));
+        setEditId(null); setAddMuscle(""); notify("Sets added", "success");
+      }
+      function removeEx(sid, ei) { persist(prev => ({ ...prev, history: prev.history.map(x => x.id !== sid ? x : { ...x, exercises: x.exercises.filter((_, i) => i !== ei) }) })); notify("Exercise removed", "info"); }
+
+      return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
+        h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "History"),
+        sorted.length === 0 && h("div", { style: { textAlign: "center", color: C.textDim, padding: 40 } }, "No workouts yet. Get after it!"),
+        sorted.map(x => {
+          const isExp = expanded === x.id;
+          const vol = (x.exercises || []).reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0);
+          const muscles = [...new Set((x.exercises || []).map(e => e.muscle))].filter(Boolean);
+          return h("div", { key: x.id, style: { background: C.surface, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 8 } },
+            h("button", { onClick: () => setExpanded(isExp ? null : x.id), style: { width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+              h("div", null,
+                h("div", { style: { fontSize: 14, fontWeight: 600 } }, new Date(x.date).toLocaleDateString("en-AU", { weekday: "short", month: "short", day: "numeric" })),
+                h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `${muscles.join(", ")} • ${fmtDur(x.duration || 0)}`),
+              ),
+              h("div", { style: { textAlign: "right" } },
+                h("div", { style: { fontSize: 16, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, vol > 1000 ? `${(vol / 1000).toFixed(1)}k` : vol),
+                h("div", { style: { fontSize: 10, color: C.textDim } }, "kg vol"),
+              ),
+            ),
+            isExp && h("div", { className: "slide-up", style: { padding: "0 16px 16px", borderTop: `1px solid ${C.border}` } },
+              (x.exercises || []).map((ex, ei) => h("div", { key: ei, style: { marginTop: 10 } },
+                h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                  h("span", { style: { fontSize: 13, fontWeight: 600 } }, ex.name),
+                  h("button", { onClick: () => removeEx(x.id, ei), style: { background: "none", border: "none", color: C.red, fontSize: 11, cursor: "pointer", padding: "4px 8px" } }, "Remove"),
+                ),
+                h("div", { style: { display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 } },
+                  (ex.sets || []).map((s, si) => h("span", { key: si, style: { fontSize: 11, color: C.textDim, padding: "2px 8px", background: C.bg, borderRadius: 6 } }, `${s.weight}kg × ${s.reps}`)),
+                ),
+              )),
+              editId === x.id ? h("div", { style: { marginTop: 12, padding: 12, background: C.bg, borderRadius: 10 } },
+                h("div", { style: { fontSize: 12, color: C.amber, marginBottom: 8 } }, "Add Sets (Correction Mode)"),
+                h("select", { value: addMuscle, onChange: e => setAddMuscle(e.target.value), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, color: C.text, marginBottom: 8, outline: "none" } },
+                  h("option", { value: "" }, "Select muscle group"),
+                  Object.keys(MUSCLE_MAP).map(m => h("option", { key: m, value: m }, m)),
+                ),
+                h("div", { style: { display: "flex", gap: 8 } },
+                  h("input", { type: "number", value: addSets, onChange: e => setAddSets(parseInt(e.target.value) || 1), style: { width: 60, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, color: C.text, textAlign: "center", outline: "none" } }),
+                  h("button", { onClick: () => addToSession(x.id), style: { flex: 1, background: C.amber, color: C.bg, border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer" } }, "Add"),
+                ),
+              ) : h("button", { onClick: () => setEditId(x.id), style: { marginTop: 10, background: "none", border: `1px dashed ${C.amber}40`, borderRadius: 8, padding: 8, color: C.amber, fontSize: 12, cursor: "pointer", width: "100%" } }, "✏️ Correction Mode"),
+            ),
+          );
+        }),
+      );
+    }
+
+    // ============================================================
+    // ANALYTICS
+    // ============================================================
+    function Analytics() {
+      const { db } = useContext(AppCtx);
+      const weeklyData = useMemo(() => {
+        const weeks = {};
+        db.history.forEach(x => { const d = new Date(x.date); const ws = new Date(d); ws.setDate(d.getDate() - d.getDay() + 1); const k = ws.toISOString().split("T")[0]; if (!weeks[k]) weeks[k] = { sessions: 0, volume: 0 }; weeks[k].sessions++; (x.exercises || []).forEach(ex => { weeks[k].volume += (ex.sets || []).reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0); }); });
+        return Object.entries(weeks).sort((a, b) => a[0].localeCompare(b[0])).slice(-8);
+      }, [db.history]);
+
+      const curVol = weeklyData.length > 0 ? weeklyData[weeklyData.length - 1][1].volume : 0;
+      const lastVol = weeklyData.length > 1 ? weeklyData[weeklyData.length - 2][1].volume : 0;
+      const change = lastVol > 0 ? ((curVol - lastVol) / lastVol * 100).toFixed(1) : 0;
+      const pbs = Object.entries(db.pbs || {}).sort((a, b) => b[1].maxWeight - a[1].maxWeight).slice(0, 10);
+
+      return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
+        h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "Analytics"),
+        // Volume trend
+        h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "Volume Trend"),
+          h("div", { style: { display: "flex", gap: 16, alignItems: "flex-end" } },
+            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "This Week"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, curVol > 1000 ? `${(curVol / 1000).toFixed(1)}k` : curVol)),
+            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "Last Week"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, lastVol > 1000 ? `${(lastVol / 1000).toFixed(1)}k` : lastVol)),
+            h("div", { style: { padding: "6px 14px", borderRadius: 20, fontSize: 14, fontWeight: 700, background: change >= 0 ? C.greenDim : C.redDim, color: change >= 0 ? C.green : C.red } }, `${change >= 0 ? "↑" : "↓"} ${Math.abs(change)}%`),
+          ),
+        ),
+        // Chart
+        weeklyData.length > 0 && h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 } }, "Weekly Volume"),
+          h("div", { style: { display: "flex", gap: 4, alignItems: "flex-end", height: 120 } },
+            weeklyData.map(([w, d], i) => {
+              const max = Math.max(...weeklyData.map(x => x[1].volume), 1);
+              const ht = (d.volume / max) * 100;
+              return h("div", { key: w, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 } },
+                h("div", { style: { fontSize: 9, color: C.textDim } }, d.volume > 1000 ? `${(d.volume / 1000).toFixed(0)}k` : d.volume),
+                h("div", { style: { width: "100%", height: `${ht}%`, minHeight: 4, background: i === weeklyData.length - 1 ? C.cyan : C.border, borderRadius: 4 } }),
+                h("div", { style: { fontSize: 9, color: C.textDim } }, new Date(w).toLocaleDateString("en-AU", { day: "numeric", month: "short" })),
+              );
+            }),
+          ),
+        ),
+        // PBs
+        h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` } },
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "🏆 Personal Bests"),
+          pbs.length === 0 && h("div", { style: { color: C.textDim, fontSize: 13 } }, "No PBs recorded yet"),
+          pbs.map(([name, pb]) => h("div", { key: name, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.bg, borderRadius: 8, marginBottom: 4 } },
+            h("span", { style: { fontSize: 13, fontWeight: 500, textTransform: "capitalize" } }, name),
+            h("div", { style: { display: "flex", gap: 12 } },
+              h("span", { style: { fontSize: 12, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, `${pb.maxWeight}kg`),
+              h("span", { style: { fontSize: 12, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.maxReps}r`),
+              h("span", { style: { fontSize: 12, color: C.amber, fontFamily: "'JetBrains Mono'" } }, `${pb.maxVolume}v`),
+            ),
+          )),
+        ),
+      );
+    }
+
+    // ============================================================
+    // SETTINGS
+    // ============================================================
+    function Settings() {
+      const { db, persist, notify } = useContext(AppCtx);
+      const t = db.settings?.timers || DEFAULT_TIMERS;
+      function upd(k, v) { persist(prev => ({ ...prev, settings: { ...prev.settings, timers: { ...(prev.settings?.timers || DEFAULT_TIMERS), [k]: parseInt(v) || 0 } } })); }
+      function clearAll() { if (confirm("This will erase ALL data. Are you sure?")) { persist(emptyDB()); notify("All data cleared", "warn"); } }
+      const fields = [{ key: "prep", label: "Prep Timer", color: C.amber }, { key: "work", label: "Work Timer", color: C.cyan }, { key: "restSet", label: "Rest (Set)", color: C.green }, { key: "restEx", label: "Rest (Exercise)", color: C.purple }];
+
+      return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
+        h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "Settings"),
+        h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
+          h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 14 } }, "Timer Defaults (seconds)"),
+          fields.map(f => h("div", { key: f.key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+            h("span", { style: { fontSize: 13, color: f.color } }, f.label),
+            h("input", { type: "number", value: t[f.key], onChange: e => upd(f.key, e.target.value), style: { width: 80, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.text, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+          )),
+        ),
+        h("button", { onClick: clearAll, style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data"),
+      );
+    }
+
+    // ============================================================
+    // EXPORT
+    // ============================================================
+    function Export() {
+      const { db, setScreen } = useContext(AppCtx);
+      const [copied, setCopied] = useState(false);
+      const data = useMemo(() => ({
+        meta: { app: "RepVault", version: "2.0", exportedAt: new Date().toISOString(), format: "ai-ready" },
+        summary: { totalSessions: db.history.length, totalExercises: db.history.reduce((s, x) => s + (x.exercises?.length || 0), 0), dateRange: db.history.length > 0 ? { from: db.history[0]?.date, to: db.history[db.history.length - 1]?.date } : null },
+        personalBests: db.pbs, weeklyBlueprints: db.blueprints,
+        history: db.history.map(x => ({ date: x.date, duration: x.duration, exercises: (x.exercises || []).map(ex => ({ name: ex.name, muscle: ex.muscle, sets: ex.sets, totalVolume: (ex.sets || []).reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0) })), sessionVolume: (x.exercises || []).reduce((s, ex) => s + (ex.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0) })),
+      }), [db]);
+
+      function copy() { navigator.clipboard?.writeText(JSON.stringify(data, null, 2)); setCopied(true); setTimeout(() => setCopied(false), 2000); }
+
+      return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
+        h("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16 } },
+          h("button", { onClick: () => setScreen("home"), style: { background: "none", border: "none", color: C.textDim, fontSize: 20, cursor: "pointer" } }, "←"),
+          h("h2", { style: { fontSize: 22, fontWeight: 800 } }, "AI-Ready Export"),
+        ),
+        h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
+          h("div", { style: { fontSize: 13, color: C.textDim, marginBottom: 12 } }, "Structured JSON for LLM consumption. Paste into Gemini, Claude, or ChatGPT for fatigue analysis and programming recommendations."),
+          h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 } },
+            h("span", { style: { fontSize: 11, padding: "4px 10px", background: C.cyanDim, color: C.cyan, borderRadius: 20 } }, `${data.summary.totalSessions} sessions`),
+            h("span", { style: { fontSize: 11, padding: "4px 10px", background: C.greenDim, color: C.green, borderRadius: 20 } }, `${data.summary.totalExercises} exercises`),
+            h("span", { style: { fontSize: 11, padding: "4px 10px", background: C.amberDim, color: C.amber, borderRadius: 20 } }, `${Object.keys(db.pbs || {}).length} PBs`),
+          ),
+          h("button", { onClick: copy, style: { width: "100%", background: copied ? C.green : C.cyan, color: C.bg, border: "none", borderRadius: 12, padding: 16, fontSize: 15, fontWeight: 700, cursor: "pointer", transition: "background 0.3s" } }, copied ? "✓ Copied!" : "📋 Copy JSON to Clipboard"),
+        ),
+        h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
+          h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 } }, "Preview"),
+          h("pre", { style: { fontSize: 10, color: C.textDim, overflow: "auto", maxHeight: 300, fontFamily: "'JetBrains Mono'", lineHeight: 1.4 } }, JSON.stringify(data, null, 2).slice(0, 2000)),
+        ),
+      );
+    }
+
+    // --- Mount ---
+    ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+
+    // --- Register Service Worker ---
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("sw.js").catch(err => console.log("SW registration failed:", err));
+      });
+    }
+  </script>
+</body>
+</html>
