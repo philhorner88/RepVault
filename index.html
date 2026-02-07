@@ -54,7 +54,7 @@
 
     const STORAGE_KEY = "repvault_v2_master";
     const PHASES = { PREP: "PREP", WORK: "WORK", REST_SET: "REST_SET", REST_EX: "REST_EX", DONE: "DONE" };
-    const DEFAULT_TIMERS = { prep: 10, work: 45, restSet: 90, restEx: 120 };
+    const DEFAULT_TIMERS = { prep: 10, work: 45, restSet: 60, restEx: 60 };
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -132,13 +132,18 @@
       const [screen, setScreen] = useState("home");
       const [wo, setWo] = useState(null);
       const [notif, setNotif] = useState(null);
+      // Global timer state — persists across screen navigation
+      const [phase, setPhase] = useState(PHASES.PREP);
+      const [timer, setTimer] = useState(DEFAULT_TIMERS.prep);
+      const [paused, setPaused] = useState(false);
+      const [clock, setClock] = useState(0);
 
       const persist = useCallback((updater) => {
         setDb(prev => { const next = typeof updater === "function" ? updater(prev) : updater; saveDB(next); return next; });
       }, []);
       const notify = useCallback((msg, type = "info") => { setNotif({ msg, type, id: Date.now() }); setTimeout(() => setNotif(null), 2500); }, []);
 
-      const ctx = { db, persist, notify, screen, setScreen, wo, setWo };
+      const ctx = { db, persist, notify, screen, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock };
 
       return h(AppCtx.Provider, { value: ctx },
         notif && h(Toast, notif),
@@ -149,7 +154,7 @@
         screen === "analytics" && h(Analytics),
         screen === "settings" && h(Settings),
         screen === "export" && h(Export),
-        screen !== "train" && h(NavBar),
+        h(NavBar),
       );
     }
 
@@ -166,20 +171,25 @@
 
     // --- NavBar ---
     function NavBar() {
-      const { screen, setScreen } = useContext(AppCtx);
+      const { screen, setScreen, wo } = useContext(AppCtx);
       const items = [
         { id: "home", icon: "⚡", label: "Home" }, { id: "blueprints", icon: "📋", label: "Plans" },
         { id: "history", icon: "📊", label: "History" }, { id: "analytics", icon: "📈", label: "Stats" },
         { id: "settings", icon: "⚙️", label: "Settings" },
       ];
+      // Insert training tab when workout is active
+      if (wo) items.splice(0, 0, { id: "train", icon: "🔥", label: "Workout", active: true });
       return h("div", { style: {
         position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 500,
         background: `${C.surface}f0`, borderTop: `1px solid ${C.border}`, display: "flex",
         padding: "6px 0 env(safe-area-inset-bottom, 8px)", backdropFilter: "blur(20px)", zIndex: 100,
       }}, items.map(it => h("button", { key: it.id, onClick: () => setScreen(it.id), style: {
-        flex: 1, background: "none", border: "none", color: screen === it.id ? C.cyan : C.textDim,
+        flex: 1, background: "none", border: "none", color: screen === it.id ? (it.active ? C.green : C.cyan) : (it.active ? C.amber : C.textDim),
         display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "6px 0", cursor: "pointer",
-      }}, h("span", { style: { fontSize: 18 } }, it.icon), h("span", { style: { fontSize: 10, fontWeight: screen === it.id ? 600 : 400 } }, it.label))));
+        position: "relative",
+      }}, h("span", { style: { fontSize: 18 } }, it.icon), h("span", { style: { fontSize: 10, fontWeight: screen === it.id ? 600 : 400 } }, it.label),
+        it.active && screen !== "train" && h("div", { style: { position: "absolute", top: 2, right: "15%", width: 7, height: 7, borderRadius: "50%", background: C.green, boxShadow: `0 0 6px ${C.green}` } }),
+      )));
     }
 
     // ============================================================
@@ -196,6 +206,20 @@
 
       const weekHistory = db.history.filter(x => (Date.now() - new Date(x.date).getTime()) / 864e5 <= 7);
       const totalVol = weekHistory.reduce((s, x) => s + (x.exercises || []).reduce((es, ex) => es + (ex.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0), 0);
+
+      // Weekly sets per muscle group
+      const weekMuscleSets = useMemo(() => {
+        const counts = {};
+        weekHistory.forEach(session => {
+          (session.exercises || []).forEach(ex => {
+            const muscle = ex.muscle || detectMuscle(ex.name);
+            if (muscle && muscle !== "other" && muscle !== "cardio") {
+              counts[muscle] = (counts[muscle] || 0) + (ex.sets || []).length;
+            }
+          });
+        });
+        return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      }, [weekHistory]);
 
       function makeExercises(names) {
         return names.map(name => ({
@@ -226,6 +250,24 @@
             h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.amber, fontFamily: "'JetBrains Mono'" } }, Object.keys(db.pbs || {}).length), h("div", { style: { fontSize: 11, color: C.textDim } }, "PBs")),
           ),
         ),
+        // Weekly muscle group breakdown
+        weekMuscleSets.length > 0 && h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 16 } },
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "Weekly Sets by Muscle"),
+          h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+            weekMuscleSets.map(([muscle, count]) => {
+              const maxSets = weekMuscleSets[0]?.[1] || 1;
+              const intensity = Math.max(0.3, count / maxSets);
+              const muscleColors = { chest: C.cyan, back: C.green, shoulders: C.amber, legs: C.purple, biceps: C.cyan, triceps: C.green, core: C.amber };
+              const mc = muscleColors[muscle] || C.cyan;
+              return h("div", { key: muscle, style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: `${mc}${Math.round(intensity * 20).toString(16).padStart(2, "0")}`, border: `1px solid ${mc}30`, borderRadius: 10, minWidth: "calc(50% - 3px)" } },
+                h("div", { style: { flex: 1 } },
+                  h("div", { style: { fontSize: 12, fontWeight: 600, color: C.text, textTransform: "capitalize" } }, muscle),
+                ),
+                h("div", { style: { fontSize: 20, fontWeight: 700, color: mc, fontFamily: "'JetBrains Mono'" } }, count),
+              );
+            }),
+          ),
+        ),
         // Today's blueprint
         todayBP && h("button", { onClick: () => startBP(todayBP), style: { width: "100%", background: `linear-gradient(135deg, ${C.cyan}15, ${C.green}15)`, border: `1px solid ${C.cyan}40`, borderRadius: 16, padding: 20, color: C.text, cursor: "pointer", textAlign: "left", marginBottom: 16 } },
           h("div", { style: { fontSize: 11, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 } }, `${todayName}'s Plan`),
@@ -252,14 +294,10 @@
     // TRAINING SCREEN
     // ============================================================
     function Train() {
-      const { db, persist, notify, setScreen, wo: initWo, setWo: setGlobalWo } = useContext(AppCtx);
-      const [wo, setWo] = useState(initWo);
-      const [phase, setPhase] = useState(PHASES.PREP);
-      const [timer, setTimer] = useState(db.settings?.timers?.prep || DEFAULT_TIMERS.prep);
-      const [paused, setPaused] = useState(false);
-      const [clock, setClock] = useState(0);
+      const { db, persist, notify, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock } = useContext(AppCtx);
       const [showAdd, setShowAdd] = useState(false);
       const [addText, setAddText] = useState("");
+      const [showQuit, setShowQuit] = useState(false);
 
       const timerRef = useRef(null);
       const clockRef = useRef(null);
@@ -270,27 +308,69 @@
       const totalSets = wo ? wo.exercises.reduce((s, e) => s + e.sets.length, 0) : 0;
       const doneSets = wo ? wo.exercises.reduce((s, e) => s + e.sets.filter(x => x.completed).length, 0) : 0;
 
+      // PB data for current exercise
       const curPB = curEx ? db.pbs?.[curEx.name.toLowerCase()] : null;
+
+      // Last performance — find the most recent session with this exercise and extract per-set weights
       const lastPerf = useMemo(() => {
         if (!curEx) return null;
         const nm = curEx.name.toLowerCase();
-        for (let i = db.history.length - 1; i >= 0; i--) { const ex = db.history[i].exercises?.find(e => e.name.toLowerCase() === nm); if (ex) return { date: db.history[i].date, vol: ex.sets.reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0) }; }
+        for (let i = db.history.length - 1; i >= 0; i--) {
+          const ex = db.history[i].exercises?.find(e => e.name.toLowerCase() === nm);
+          if (ex) return {
+            date: db.history[i].date,
+            sets: ex.sets || [],
+            vol: (ex.sets || []).reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0),
+          };
+        }
         return null;
       }, [curEx?.name, db.history]);
+
+      // Auto-populate weights from last session when exercise changes
+      const prevExIdxRef = useRef(null);
+      useEffect(() => {
+        if (!wo || !curEx || curEx.isCardio) return;
+        if (prevExIdxRef.current === wo.currentExIdx) return;
+        prevExIdxRef.current = wo.currentExIdx;
+        if (lastPerf && lastPerf.sets.length > 0) {
+          // Only auto-fill if sets have no weight yet (fresh exercise)
+          const allEmpty = curEx.sets.every(s => !s.weight || s.weight === 0);
+          if (allEmpty) {
+            setWo(prev => {
+              const next = deepClone(prev);
+              const ex = next.exercises[next.currentExIdx];
+              ex.sets.forEach((s, i) => {
+                const historySet = lastPerf.sets[i] || lastPerf.sets[lastPerf.sets.length - 1];
+                if (historySet) {
+                  s.weight = historySet.weight || 0;
+                  s.reps = historySet.reps || 0;
+                }
+              });
+              return next;
+            });
+          }
+        }
+      }, [wo?.currentExIdx, lastPerf]);
 
       function updateSet(ei, si, field, val) {
         setWo(prev => {
           const next = deepClone(prev);
           next.exercises[ei].sets[si][field] = val;
-          if (field === "weight" && si === 0) { for (let i = 1; i < next.exercises[ei].sets.length; i++) { if (!next.exercises[ei].sets[i].weight) next.exercises[ei].sets[i].weight = val; } }
+          // Weight continuity: Set 1 weight fills unfilled subsequent sets
+          if (field === "weight" && si === 0) {
+            for (let i = 1; i < next.exercises[ei].sets.length; i++) {
+              if (!next.exercises[ei].sets[i].weight) next.exercises[ei].sets[i].weight = val;
+            }
+          }
           return next;
         });
       }
 
       useEffect(() => { audio.init(); audio.startHeartbeat(); return () => audio.stopHeartbeat(); }, []);
 
+      // Timer tick — runs globally even when navigated away
       useEffect(() => {
-        if (paused || phase === PHASES.DONE) return;
+        if (paused || phase === PHASES.DONE || !wo) return;
         lastTick.current = Date.now();
         timerRef.current = setInterval(() => {
           const now = Date.now(), el = (now - lastTick.current) / 1000;
@@ -305,13 +385,19 @@
           });
         }, 100);
         return () => clearInterval(timerRef.current);
-      }, [phase, paused, wo?.currentExIdx, wo?.currentSetIdx]);
+      }, [phase, paused, wo?.currentExIdx, wo?.currentSetIdx, wo]);
 
-      useEffect(() => { clockRef.current = setInterval(() => setClock(Math.floor((Date.now() - wo.startTime) / 1000)), 1000); return () => clearInterval(clockRef.current); }, [wo?.startTime]);
+      // Session clock
+      useEffect(() => {
+        if (!wo) return;
+        clockRef.current = setInterval(() => setClock(Math.floor((Date.now() - wo.startTime) / 1000)), 1000);
+        return () => clearInterval(clockRef.current);
+      }, [wo?.startTime]);
 
-      useEffect(() => { if (curEx) updateMedia(`${curEx.name} - Set ${wo.currentSetIdx + 1}`, `${phase} • ${fmtTime(timer)}`); }, [phase, timer, curEx?.name, wo?.currentSetIdx]);
+      useEffect(() => { if (curEx && wo) updateMedia(`${curEx.name} - Set ${wo.currentSetIdx + 1}`, `${phase} • ${fmtTime(timer)}`); }, [phase, timer, curEx?.name, wo?.currentSetIdx]);
 
       function advancePhase() {
+        if (!wo) return;
         const ex = wo.exercises[wo.currentExIdx];
         if (!ex) { finish(); return; }
         if (phase === PHASES.PREP) { setPhase(PHASES.WORK); setTimer(timers.work); audio.speak(`${ex.name}, Set ${wo.currentSetIdx + 1}, Work`); }
@@ -345,7 +431,58 @@
         const newPBs = { ...(db.pbs || {}) };
         session.exercises.forEach(ex => { const k = ex.name.toLowerCase(); const b = newPBs[k] || { maxWeight: 0, maxVolume: 0, maxReps: 0 }; ex.sets.forEach(s => { if (s.weight > b.maxWeight) b.maxWeight = s.weight; if (s.reps > b.maxReps) b.maxReps = s.reps; }); const v = ex.sets.reduce((s, st) => s + st.weight * st.reps, 0); if (v > b.maxVolume) b.maxVolume = v; newPBs[k] = b; });
         persist(prev => ({ ...prev, history: [...prev.history, session], pbs: newPBs }));
-        notify("Workout saved! 💪", "success"); setGlobalWo(null); setScreen("home");
+        notify("Workout saved! 💪", "success"); setWo(null); setPhase(PHASES.PREP); setScreen("home");
+      }
+
+      function quitWorkout() {
+        setWo(null); setPhase(PHASES.PREP); setTimer(DEFAULT_TIMERS.prep); setPaused(false); setClock(0); setShowQuit(false); setScreen("home");
+        notify("Workout discarded", "warn");
+      }
+
+      // Queue reordering — move an exercise to be next
+      function moveToNext(exIdx) {
+        if (exIdx <= wo.currentExIdx) return; // can't move current or past
+        setWo(prev => {
+          const next = deepClone(prev);
+          const targetPos = prev.currentExIdx + 1;
+          if (exIdx === targetPos) return prev; // already next
+          const [moved] = next.exercises.splice(exIdx, 1);
+          next.exercises.splice(targetPos, 0, moved);
+          return next;
+        });
+        notify("Moved to next", "success");
+      }
+
+      function moveUp(exIdx) {
+        if (exIdx <= wo.currentExIdx + 1) return; // can't move above current+1
+        setWo(prev => {
+          const next = deepClone(prev);
+          const temp = next.exercises[exIdx];
+          next.exercises[exIdx] = next.exercises[exIdx - 1];
+          next.exercises[exIdx - 1] = temp;
+          return next;
+        });
+      }
+
+      function moveDown(exIdx) {
+        if (exIdx <= wo.currentExIdx || exIdx >= wo.exercises.length - 1) return;
+        setWo(prev => {
+          const next = deepClone(prev);
+          const temp = next.exercises[exIdx];
+          next.exercises[exIdx] = next.exercises[exIdx + 1];
+          next.exercises[exIdx + 1] = temp;
+          return next;
+        });
+      }
+
+      function removeFromQueue(exIdx) {
+        if (exIdx <= wo.currentExIdx) return;
+        setWo(prev => {
+          const next = deepClone(prev);
+          next.exercises.splice(exIdx, 1);
+          return next;
+        });
+        notify("Removed from queue", "info");
       }
 
       function addExercise(bulk) {
@@ -356,13 +493,20 @@
         setAddText(""); setShowAdd(false); notify(`Added ${newExs.length} exercise(s)`, "success");
       }
 
-      if (!wo) return null;
+      if (!wo) return h("div", { className: "fade-in", style: { padding: "40px 16px", textAlign: "center", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
+        h("div", { style: { fontSize: 48, marginBottom: 16 } }, "🏋️"),
+        h("h2", { style: { fontSize: 20, fontWeight: 700, marginBottom: 8 } }, "No Active Workout"),
+        h("p", { style: { color: C.textDim, fontSize: 13, marginBottom: 24 } }, "Start a workout from the Home screen or load a Blueprint."),
+        h("button", { onClick: () => setScreen("home"), style: { background: C.cyan, color: C.bg, border: "none", borderRadius: 12, padding: "14px 32px", fontSize: 15, fontWeight: 700, cursor: "pointer" } }, "Go Home"),
+      );
+
       const glow = phaseColor[phase] || C.cyan;
       const prog = totalSets > 0 ? doneSets / totalSets : 0;
 
       return h("div", { style: { minHeight: "100vh", background: C.bg, paddingBottom: 160, maxWidth: 500, margin: "0 auto" } },
-        // Top bar
+        // Top bar with quit button
         h("div", { style: { padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.border}` } },
+          h("button", { onClick: () => setShowQuit(true), style: { background: "none", border: `1px solid ${C.red}40`, borderRadius: 8, padding: "4px 10px", color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer" } }, "Quit"),
           h("span", { style: { fontSize: 11, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, `⏱ ${fmtDur(clock)}`),
           h("span", { style: { fontSize: 11, color: C.textDim } }, `${doneSets}/${totalSets} sets`),
           h("button", { onClick: () => { audio.toggle(); notify(audio.enabled ? "Audio ON" : "Audio OFF"); }, style: { background: "none", border: "none", color: audio.enabled ? C.cyan : C.textDim, fontSize: 18, cursor: "pointer" } }, audio.enabled ? "🔊" : "🔇"),
@@ -383,13 +527,24 @@
           h("p", { style: { color: C.textDim, marginTop: 4 } }, `${fmtDur(clock)} • ${doneSets} sets`),
           h("button", { onClick: finish, style: { marginTop: 24, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
         ),
-        // Set inputs
-        curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "12px 16px" } },
-          h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
-            (curPB || lastPerf) && h("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
-              curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 8, padding: "8px 10px", border: `1px solid ${C.amber}30`, fontSize: 11 } }, h("span", { style: { color: C.amber } }, "🏆 PB"), h("span", { style: { color: C.textDim, marginLeft: 6 } }, `${curPB.maxWeight}kg • ${curPB.maxReps}r`)),
-              lastPerf && h("div", { style: { flex: 1, background: `${C.cyan}10`, borderRadius: 8, padding: "8px 10px", border: `1px solid ${C.cyan}30`, fontSize: 11 } }, h("span", { style: { color: C.cyan } }, "📅 Last"), h("span", { style: { color: C.textDim, marginLeft: 6 } }, `${lastPerf.vol}kg vol`)),
+        // PB & Last Performance display — enhanced
+        curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "12px 16px 0" } },
+          (curPB || lastPerf) && h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
+            curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.amber}30` } },
+              h("div", { style: { fontSize: 10, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "🏆 All-Time PB"),
+              h("div", { style: { fontSize: 14, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${curPB.maxWeight}kg`),
+              h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `Best reps: ${curPB.maxReps} • Vol: ${curPB.maxVolume}kg`),
             ),
+            lastPerf && h("div", { style: { flex: 1, background: `${C.cyan}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.cyan}30` } },
+              h("div", { style: { fontSize: 10, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "📅 Last Session"),
+              h("div", { style: { fontSize: 14, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${lastPerf.vol}kg vol`),
+              h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, lastPerf.sets.map((s, i) => `S${i+1}: ${s.weight}kg×${s.reps}`).join(" • ")),
+            ),
+          ),
+        ),
+        // Set inputs
+        curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "4px 16px" } },
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
             h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
               curEx.sets.map((s, si) => h("div", { key: si, style: { display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 10, background: si === wo.currentSetIdx ? `${glow}10` : "transparent", border: si === wo.currentSetIdx ? `1px solid ${glow}30` : "1px solid transparent", opacity: s.completed ? 0.5 : 1 } },
                 h("div", { style: { width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: "'JetBrains Mono'", background: s.completed ? C.green : C.bg, color: s.completed ? C.bg : C.textDim, border: `1px solid ${s.completed ? C.green : C.border}` } }, s.completed ? "✓" : si + 1),
@@ -408,10 +563,25 @@
             h("input", { type: "number", inputMode: "numeric", value: curEx.sets[0]?.duration || "", onChange: e => updateSet(wo.currentExIdx, 0, "duration", parseInt(e.target.value) || 0), placeholder: "30", style: { width: 120, background: C.bg, border: `1px solid ${C.amberDim}`, borderRadius: 12, padding: 14, color: C.amber, fontSize: 28, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
           ),
         ),
-        // Queue
+        // Queue with reorder controls
         h("div", { style: { padding: "8px 16px" } },
           h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingLeft: 4 } }, `Queue (${Math.max(0, wo.exercises.length - wo.currentExIdx - 1)} remaining)`),
-          wo.exercises.slice(wo.currentExIdx + 1).map((ex, i) => h("div", { key: ex.id, style: { padding: "10px 14px", borderRadius: 10, background: C.surface, border: `1px solid ${C.border}`, fontSize: 13, color: C.textDim, display: "flex", justifyContent: "space-between", marginBottom: 4 } }, h("span", null, ex.name), h("span", { style: { fontSize: 11 } }, ex.isCardio ? "cardio" : `${ex.sets.length} sets`))),
+          wo.exercises.map((ex, i) => {
+            if (i <= wo.currentExIdx) return null;
+            const isNext = i === wo.currentExIdx + 1;
+            return h("div", { key: ex.id, style: { padding: "10px 12px", borderRadius: 10, background: C.surface, border: `1px solid ${isNext ? C.cyan + "40" : C.border}`, fontSize: 13, color: C.textDim, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
+              h("div", { style: { flex: 1, minWidth: 0 } },
+                h("span", { style: { color: isNext ? C.cyan : C.textDim, fontWeight: isNext ? 600 : 400 } }, isNext ? "▶ " : "", ex.name),
+                h("span", { style: { fontSize: 11, marginLeft: 6 } }, ex.isCardio ? "cardio" : `${ex.sets.length}s`),
+              ),
+              h("div", { style: { display: "flex", gap: 2, flexShrink: 0 } },
+                !isNext && h("button", { onClick: () => moveToNext(i), title: "Move to next", style: { background: `${C.cyan}15`, border: `1px solid ${C.cyan}30`, borderRadius: 6, padding: "4px 8px", color: C.cyan, fontSize: 10, fontWeight: 700, cursor: "pointer" } }, "NEXT"),
+                h("button", { onClick: () => moveUp(i), title: "Move up", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", color: C.textDim, fontSize: 12, cursor: "pointer", opacity: i <= wo.currentExIdx + 1 ? 0.3 : 1 } }, "↑"),
+                h("button", { onClick: () => moveDown(i), title: "Move down", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", color: C.textDim, fontSize: 12, cursor: "pointer", opacity: i >= wo.exercises.length - 1 ? 0.3 : 1 } }, "↓"),
+                h("button", { onClick: () => removeFromQueue(i), title: "Remove", style: { background: "none", border: `1px solid ${C.red}30`, borderRadius: 6, padding: "4px 6px", color: C.red, fontSize: 11, cursor: "pointer" } }, "✕"),
+              ),
+            );
+          }),
         ),
         // Add exercise
         h("div", { style: { padding: "8px 16px" } },
@@ -428,11 +598,24 @@
             ),
           ),
         ),
+        // Quit confirmation modal
+        showQuit && h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }, onClick: e => { if (e.target === e.currentTarget) setShowQuit(false); } },
+          h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 20, padding: 24, width: "100%", maxWidth: 360, border: `1px solid ${C.border}`, textAlign: "center" } },
+            h("div", { style: { fontSize: 36, marginBottom: 12 } }, "⚠️"),
+            h("h3", { style: { fontSize: 18, fontWeight: 700, marginBottom: 8 } }, "Quit Workout?"),
+            h("p", { style: { color: C.textDim, fontSize: 13, marginBottom: 20 } }, "This will discard all progress. Save first if you want to keep it."),
+            h("div", { style: { display: "flex", gap: 8 } },
+              h("button", { onClick: finish, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 10, padding: 14, fontWeight: 700, cursor: "pointer" } }, "Save & End"),
+              h("button", { onClick: quitWorkout, style: { flex: 1, background: C.red, color: "#fff", border: "none", borderRadius: 10, padding: 14, fontWeight: 700, cursor: "pointer" } }, "Discard"),
+              h("button", { onClick: () => setShowQuit(false), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, fontWeight: 600, cursor: "pointer" } }, "Cancel"),
+            ),
+          ),
+        ),
         // ACTION ZONE
-        phase !== PHASES.DONE && h("div", { style: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 500, padding: "16px 20px env(safe-area-inset-bottom, 16px)", background: `${C.surface}f5`, borderTop: `1px solid ${C.border}`, backdropFilter: "blur(20px)", display: "flex", gap: 12, justifyContent: "center", alignItems: "center", zIndex: 100 } },
-          h("button", { onClick: goBack, style: { width: 64, height: 64, borderRadius: "50%", background: C.bg, border: `2px solid ${C.border}`, color: C.text, fontSize: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏮"),
-          h("button", { onClick: () => setPaused(!paused), style: { width: 80, height: 80, borderRadius: "50%", background: paused ? C.green : C.amber, border: "none", color: C.bg, fontSize: 28, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `0 0 30px ${paused ? C.greenDim : C.amberDim}` } }, paused ? "▶" : "⏸"),
-          h("button", { onClick: skip, style: { width: 64, height: 64, borderRadius: "50%", background: C.bg, border: `2px solid ${C.border}`, color: C.text, fontSize: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏭"),
+        phase !== PHASES.DONE && h("div", { style: { position: "fixed", bottom: 56, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 500, padding: "12px 20px", background: `${C.surface}f5`, borderTop: `1px solid ${C.border}`, backdropFilter: "blur(20px)", display: "flex", gap: 12, justifyContent: "center", alignItems: "center", zIndex: 99 } },
+          h("button", { onClick: goBack, style: { width: 56, height: 56, borderRadius: "50%", background: C.bg, border: `2px solid ${C.border}`, color: C.text, fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏮"),
+          h("button", { onClick: () => setPaused(!paused), style: { width: 72, height: 72, borderRadius: "50%", background: paused ? C.green : C.amber, border: "none", color: C.bg, fontSize: 26, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `0 0 30px ${paused ? C.greenDim : C.amberDim}` } }, paused ? "▶" : "⏸"),
+          h("button", { onClick: skip, style: { width: 56, height: 56, borderRadius: "50%", background: C.bg, border: `2px solid ${C.border}`, color: C.text, fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏭"),
         ),
       );
     }
