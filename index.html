@@ -597,89 +597,105 @@
       const glow = phaseColor[phase] || C.cyan;
       const prog = totalSets > 0 ? doneSets / totalSets : 0;
 
-      return h("div", { style: { minHeight: "100vh", background: C.bg, paddingBottom: 160, maxWidth: 500, margin: "0 auto" } },
-        // Top bar with quit button
-        h("div", { style: { padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.border}` } },
-          h("button", { onClick: () => setShowQuit(true), style: { background: "none", border: `1px solid ${C.red}40`, borderRadius: 8, padding: "4px 10px", color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer" } }, "Quit"),
-          h("span", { style: { fontSize: 11, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, `⏱ ${fmtDur(clock)}`),
-          h("span", { style: { fontSize: 11, color: C.textDim } }, `${doneSets}/${totalSets} sets`),
-          h("button", { onClick: () => { audio.toggle(); notify(audio.enabled ? "Audio ON" : "Audio OFF"); }, style: { background: "none", border: "none", color: audio.enabled ? C.cyan : C.textDim, fontSize: 18, cursor: "pointer" } }, audio.enabled ? "🔊" : "🔇"),
-        ),
-        // Progress
-        h("div", { style: { height: 3, background: C.border } }, h("div", { style: { height: "100%", width: `${prog * 100}%`, background: C.green, transition: "width 0.5s" } })),
-        // Timer display
-        phase !== PHASES.DONE && curEx && h("div", { className: "fade-in", style: { textAlign: "center", padding: "24px 16px 8px" } },
-          h("div", { style: { display: "inline-block", padding: "4px 16px", borderRadius: 20, background: `${glow}15`, border: `1px solid ${glow}40`, color: glow, fontSize: 12, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase", marginBottom: 12 } }, phase.replace("_", " ")),
-          h("div", { style: { fontSize: 72, fontWeight: 700, color: glow, fontFamily: "'JetBrains Mono'", animation: timer <= 3 ? "countPulse 0.5s ease infinite" : "none", textShadow: `0 0 40px ${glow}40` } }, fmtTime(timer)),
-          h("div", { style: { fontSize: 20, fontWeight: 700, marginTop: 4 } }, curEx.name),
-          h("div", { style: { fontSize: 13, color: C.textDim, marginTop: 2 } }, `Set ${wo.currentSetIdx + 1} of ${curEx.sets.length} • ${curEx.muscle}`),
-        ),
-        // Done
-        phase === PHASES.DONE && h("div", { style: { textAlign: "center", padding: "40px 16px" } },
-          h("div", { style: { fontSize: 48 } }, "🏆"),
-          h("h2", { style: { fontSize: 28, fontWeight: 800, color: C.green, marginTop: 12 } }, "Complete!"),
-          h("p", { style: { color: C.textDim, marginTop: 4 } }, `${fmtDur(clock)} • ${doneSets} sets`),
-          h("button", { onClick: finish, style: { marginTop: 24, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
-        ),
-        // PB & Last Performance display — enhanced
-        curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "12px 16px 0" } },
-          (curPB || lastPerf) && h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
-            curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.amber}30` } },
-              h("div", { style: { fontSize: 10, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "🏆 All-Time PB"),
-              h("div", { style: { fontSize: 14, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${curPB.maxWeight}kg`),
-              h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `Best reps: ${curPB.maxReps} • Vol: ${curPB.maxVolume}kg`),
+      return h("div", { style: { minHeight: "100vh", background: C.bg, maxWidth: 500, margin: "0 auto", display: "flex", flexDirection: "column" } },
+        // === FIXED TOP: Timer + Controls ===
+        phase !== PHASES.DONE && curEx && h("div", { style: { position: "sticky", top: 0, zIndex: 50, background: C.bg, borderBottom: `1px solid ${C.border}`, paddingBottom: 8 } },
+          // Status bar row
+          h("div", { style: { padding: "8px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            h("button", { onClick: () => setShowQuit(true), style: { background: "none", border: `1px solid ${C.red}40`, borderRadius: 8, padding: "4px 10px", color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer" } }, "Quit"),
+            h("span", { style: { fontSize: 11, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, `⏱ ${fmtDur(clock)}`),
+            h("span", { style: { fontSize: 11, color: C.textDim } }, `${doneSets}/${totalSets}`),
+            h("button", { onClick: () => { audio.toggle(); notify(audio.enabled ? "Audio ON" : "Audio OFF"); }, style: { background: "none", border: "none", color: audio.enabled ? C.cyan : C.textDim, fontSize: 18, cursor: "pointer" } }, audio.enabled ? "🔊" : "🔇"),
+          ),
+          // Progress bar
+          h("div", { style: { height: 3, background: C.border } }, h("div", { style: { height: "100%", width: `${prog * 100}%`, background: C.green, transition: "width 0.5s" } })),
+          // Timer + exercise name + controls in one compact block
+          h("div", { style: { display: "flex", alignItems: "center", padding: "10px 16px", gap: 12 } },
+            // Back button
+            h("button", { onClick: goBack, style: { width: 48, height: 48, borderRadius: "50%", background: C.surface, border: `1px solid ${C.border}`, color: C.text, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, "⏮"),
+            // Timer + info center
+            h("div", { style: { flex: 1, textAlign: "center" } },
+              h("div", { style: { display: "inline-block", padding: "2px 10px", borderRadius: 12, background: `${glow}15`, border: `1px solid ${glow}40`, color: glow, fontSize: 10, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 } }, phase.replace("_", " ")),
+              h("div", { style: { fontSize: 48, fontWeight: 700, color: glow, fontFamily: "'JetBrains Mono'", lineHeight: 1, animation: timer <= 3 ? "countPulse 0.5s ease infinite" : "none", textShadow: `0 0 30px ${glow}30` } }, fmtTime(timer)),
+              h("div", { style: { fontSize: 14, fontWeight: 700, marginTop: 2 } }, curEx.name),
+              h("div", { style: { fontSize: 11, color: C.textDim } }, `Set ${wo.currentSetIdx + 1}/${curEx.sets.length} • ${curEx.muscle}`),
             ),
-            lastPerf && h("div", { style: { flex: 1, background: `${C.cyan}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.cyan}30` } },
-              h("div", { style: { fontSize: 10, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "📅 Last Session"),
-              h("div", { style: { fontSize: 14, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${lastPerf.vol}kg vol`),
-              h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, lastPerf.sets.map((s, i) => `S${i+1}: ${s.weight}kg×${s.reps}`).join(" • ")),
-            ),
+            // Pause button (center emphasis)
+            h("button", { onClick: () => setPaused(!paused), style: { width: 56, height: 56, borderRadius: "50%", background: paused ? C.green : C.amber, border: "none", color: C.bg, fontSize: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `0 0 20px ${paused ? C.greenDim : C.amberDim}`, flexShrink: 0 } }, paused ? "▶" : "⏸"),
+            // Skip button
+            h("button", { onClick: skip, style: { width: 48, height: 48, borderRadius: "50%", background: C.surface, border: `1px solid ${C.border}`, color: C.text, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, "⏭"),
           ),
         ),
-        // Set inputs
-        curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "4px 16px" } },
-          h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
-            h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-              curEx.sets.map((s, si) => h("div", { key: si, style: { display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 10, background: si === wo.currentSetIdx ? `${glow}10` : "transparent", border: si === wo.currentSetIdx ? `1px solid ${glow}30` : "1px solid transparent", opacity: s.completed ? 0.5 : 1 } },
-                h("div", { style: { width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: "'JetBrains Mono'", background: s.completed ? C.green : C.bg, color: s.completed ? C.bg : C.textDim, border: `1px solid ${s.completed ? C.green : C.border}` } }, s.completed ? "✓" : si + 1),
-                h("div", { style: { flex: 1, display: "flex", gap: 8 } },
-                  h("input", { type: "number", inputMode: "decimal", value: s.weight || "", onChange: e => updateSet(wo.currentExIdx, si, "weight", parseFloat(e.target.value) || 0), placeholder: "KG", style: { width: "100%", background: C.bg, border: `1px solid ${C.cyanDim}`, borderRadius: 8, padding: "10px 8px", color: C.cyan, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
-                  h("input", { type: "number", inputMode: "numeric", value: s.reps || "", onChange: e => updateSet(wo.currentExIdx, si, "reps", parseInt(e.target.value) || 0), placeholder: "Reps", style: { width: "100%", background: C.bg, border: `1px solid ${C.greenDim}`, borderRadius: 8, padding: "10px 8px", color: C.green, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+
+        // === SCROLLABLE CONTENT ===
+        h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 90 } },
+          // Done screen
+          phase === PHASES.DONE && h("div", { style: { textAlign: "center", padding: "40px 16px" } },
+            h("div", { style: { fontSize: 48 } }, "🏆"),
+            h("h2", { style: { fontSize: 28, fontWeight: 800, color: C.green, marginTop: 12 } }, "Complete!"),
+            h("p", { style: { color: C.textDim, marginTop: 4 } }, `${fmtDur(clock)} • ${doneSets} sets`),
+            h("button", { onClick: finish, style: { marginTop: 24, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
+          ),
+          // PB & Last Performance display
+          curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "12px 16px 0" } },
+            (curPB || lastPerf) && h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
+              curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.amber}30` } },
+                h("div", { style: { fontSize: 10, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "🏆 All-Time PB"),
+                h("div", { style: { fontSize: 14, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${curPB.maxWeight}kg`),
+                h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `Best reps: ${curPB.maxReps} • Vol: ${curPB.maxVolume}kg`),
+              ),
+              lastPerf && h("div", { style: { flex: 1, background: `${C.cyan}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.cyan}30` } },
+                h("div", { style: { fontSize: 10, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "📅 Last Session"),
+                h("div", { style: { fontSize: 14, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${lastPerf.vol}kg vol`),
+                h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, lastPerf.sets.map((s, i) => `S${i+1}: ${s.weight}kg×${s.reps}`).join(" • ")),
+              ),
+            ),
+          ),
+          // Set inputs
+          curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "4px 16px" } },
+            h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
+              h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+                curEx.sets.map((s, si) => h("div", { key: si, style: { display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 10, background: si === wo.currentSetIdx ? `${glow}10` : "transparent", border: si === wo.currentSetIdx ? `1px solid ${glow}30` : "1px solid transparent", opacity: s.completed ? 0.5 : 1 } },
+                  h("div", { style: { width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: "'JetBrains Mono'", background: s.completed ? C.green : C.bg, color: s.completed ? C.bg : C.textDim, border: `1px solid ${s.completed ? C.green : C.border}` } }, s.completed ? "✓" : si + 1),
+                  h("div", { style: { flex: 1, display: "flex", gap: 8 } },
+                    h("input", { type: "number", inputMode: "decimal", value: s.weight || "", onChange: e => updateSet(wo.currentExIdx, si, "weight", parseFloat(e.target.value) || 0), placeholder: "KG", style: { width: "100%", background: C.bg, border: `1px solid ${C.cyanDim}`, borderRadius: 8, padding: "10px 8px", color: C.cyan, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                    h("input", { type: "number", inputMode: "numeric", value: s.reps || "", onChange: e => updateSet(wo.currentExIdx, si, "reps", parseInt(e.target.value) || 0), placeholder: "Reps", style: { width: "100%", background: C.bg, border: `1px solid ${C.greenDim}`, borderRadius: 8, padding: "10px 8px", color: C.green, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  ),
+                )),
+              ),
+            ),
+          ),
+          // Cardio input
+          curEx?.isCardio && phase !== PHASES.DONE && h("div", { style: { padding: "12px 16px" } },
+            h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, textAlign: "center" } },
+              h("div", { style: { fontSize: 13, color: C.textDim, marginBottom: 8 } }, "Duration (minutes)"),
+              h("input", { type: "number", inputMode: "numeric", value: curEx.sets[0]?.duration || "", onChange: e => updateSet(wo.currentExIdx, 0, "duration", parseInt(e.target.value) || 0), placeholder: "30", style: { width: 120, background: C.bg, border: `1px solid ${C.amberDim}`, borderRadius: 12, padding: 14, color: C.amber, fontSize: 28, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+            ),
+          ),
+          // Queue with reorder controls
+          h("div", { style: { padding: "8px 16px" } },
+            h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingLeft: 4 } }, `Queue (${Math.max(0, wo.exercises.length - wo.currentExIdx - 1)} remaining)`),
+            wo.exercises.map((ex, i) => {
+              if (i <= wo.currentExIdx) return null;
+              const isNext = i === wo.currentExIdx + 1;
+              return h("div", { key: ex.id, style: { padding: "10px 12px", borderRadius: 10, background: C.surface, border: `1px solid ${isNext ? C.cyan + "40" : C.border}`, fontSize: 13, color: C.textDim, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
+                h("div", { style: { flex: 1, minWidth: 0 } },
+                  h("span", { style: { color: isNext ? C.cyan : C.textDim, fontWeight: isNext ? 600 : 400 } }, isNext ? "▶ " : "", ex.name),
+                  h("span", { style: { fontSize: 11, marginLeft: 6 } }, ex.isCardio ? "cardio" : `${ex.sets.length}s`),
                 ),
-              )),
-            ),
+                h("div", { style: { display: "flex", gap: 2, flexShrink: 0 } },
+                  !isNext && h("button", { onClick: () => moveToNext(i), title: "Move to next", style: { background: `${C.cyan}15`, border: `1px solid ${C.cyan}30`, borderRadius: 6, padding: "4px 8px", color: C.cyan, fontSize: 10, fontWeight: 700, cursor: "pointer" } }, "NEXT"),
+                  h("button", { onClick: () => moveUp(i), title: "Move up", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", color: C.textDim, fontSize: 12, cursor: "pointer", opacity: i <= wo.currentExIdx + 1 ? 0.3 : 1 } }, "↑"),
+                  h("button", { onClick: () => moveDown(i), title: "Move down", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", color: C.textDim, fontSize: 12, cursor: "pointer", opacity: i >= wo.exercises.length - 1 ? 0.3 : 1 } }, "↓"),
+                  h("button", { onClick: () => removeFromQueue(i), title: "Remove", style: { background: "none", border: `1px solid ${C.red}30`, borderRadius: 6, padding: "4px 6px", color: C.red, fontSize: 11, cursor: "pointer" } }, "✕"),
+                ),
+              );
+            }),
           ),
-        ),
-        // Cardio input
-        curEx?.isCardio && phase !== PHASES.DONE && h("div", { style: { padding: "12px 16px" } },
-          h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, textAlign: "center" } },
-            h("div", { style: { fontSize: 13, color: C.textDim, marginBottom: 8 } }, "Duration (minutes)"),
-            h("input", { type: "number", inputMode: "numeric", value: curEx.sets[0]?.duration || "", onChange: e => updateSet(wo.currentExIdx, 0, "duration", parseInt(e.target.value) || 0), placeholder: "30", style: { width: 120, background: C.bg, border: `1px solid ${C.amberDim}`, borderRadius: 12, padding: 14, color: C.amber, fontSize: 28, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+          // Add exercise
+          h("div", { style: { padding: "8px 16px" } },
+            h("button", { onClick: () => setShowAdd(true), style: { width: "100%", background: "none", border: `1px dashed ${C.border}`, borderRadius: 10, padding: 12, color: C.textDim, cursor: "pointer", fontSize: 13 } }, "+ Add Exercise"),
           ),
-        ),
-        // Queue with reorder controls
-        h("div", { style: { padding: "8px 16px" } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingLeft: 4 } }, `Queue (${Math.max(0, wo.exercises.length - wo.currentExIdx - 1)} remaining)`),
-          wo.exercises.map((ex, i) => {
-            if (i <= wo.currentExIdx) return null;
-            const isNext = i === wo.currentExIdx + 1;
-            return h("div", { key: ex.id, style: { padding: "10px 12px", borderRadius: 10, background: C.surface, border: `1px solid ${isNext ? C.cyan + "40" : C.border}`, fontSize: 13, color: C.textDim, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
-              h("div", { style: { flex: 1, minWidth: 0 } },
-                h("span", { style: { color: isNext ? C.cyan : C.textDim, fontWeight: isNext ? 600 : 400 } }, isNext ? "▶ " : "", ex.name),
-                h("span", { style: { fontSize: 11, marginLeft: 6 } }, ex.isCardio ? "cardio" : `${ex.sets.length}s`),
-              ),
-              h("div", { style: { display: "flex", gap: 2, flexShrink: 0 } },
-                !isNext && h("button", { onClick: () => moveToNext(i), title: "Move to next", style: { background: `${C.cyan}15`, border: `1px solid ${C.cyan}30`, borderRadius: 6, padding: "4px 8px", color: C.cyan, fontSize: 10, fontWeight: 700, cursor: "pointer" } }, "NEXT"),
-                h("button", { onClick: () => moveUp(i), title: "Move up", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", color: C.textDim, fontSize: 12, cursor: "pointer", opacity: i <= wo.currentExIdx + 1 ? 0.3 : 1 } }, "↑"),
-                h("button", { onClick: () => moveDown(i), title: "Move down", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", color: C.textDim, fontSize: 12, cursor: "pointer", opacity: i >= wo.exercises.length - 1 ? 0.3 : 1 } }, "↓"),
-                h("button", { onClick: () => removeFromQueue(i), title: "Remove", style: { background: "none", border: `1px solid ${C.red}30`, borderRadius: 6, padding: "4px 6px", color: C.red, fontSize: 11, cursor: "pointer" } }, "✕"),
-              ),
-            );
-          }),
-        ),
-        // Add exercise
-        h("div", { style: { padding: "8px 16px" } },
-          h("button", { onClick: () => setShowAdd(true), style: { width: "100%", background: "none", border: `1px dashed ${C.border}`, borderRadius: 10, padding: 12, color: C.textDim, cursor: "pointer", fontSize: 13 } }, "+ Add Exercise"),
         ),
         // Add modal
         showAdd && h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }, onClick: e => { if (e.target === e.currentTarget) setShowAdd(false); } },
@@ -704,12 +720,6 @@
               h("button", { onClick: () => setShowQuit(false), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, fontWeight: 600, cursor: "pointer" } }, "Cancel"),
             ),
           ),
-        ),
-        // ACTION ZONE
-        phase !== PHASES.DONE && h("div", { style: { position: "fixed", bottom: 56, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 500, padding: "12px 20px", background: `${C.surface}f5`, borderTop: `1px solid ${C.border}`, backdropFilter: "blur(20px)", display: "flex", gap: 12, justifyContent: "center", alignItems: "center", zIndex: 99 } },
-          h("button", { onClick: goBack, style: { width: 56, height: 56, borderRadius: "50%", background: C.bg, border: `2px solid ${C.border}`, color: C.text, fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏮"),
-          h("button", { onClick: () => setPaused(!paused), style: { width: 72, height: 72, borderRadius: "50%", background: paused ? C.green : C.amber, border: "none", color: C.bg, fontSize: 26, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `0 0 30px ${paused ? C.greenDim : C.amberDim}` } }, paused ? "▶" : "⏸"),
-          h("button", { onClick: skip, style: { width: 56, height: 56, borderRadius: "50%", background: C.bg, border: `2px solid ${C.border}`, color: C.text, fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏭"),
         ),
       );
     }
