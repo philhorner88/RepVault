@@ -58,21 +58,115 @@
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
-    const MUSCLE_MAP = {
-      chest: ["bench", "press", "fly", "flye", "push up", "pushup", "pec", "dip", "crossover", "chest"],
-      back: ["row", "pull", "lat", "deadlift", "chin up", "chinup", "pulldown", "pullup", "back ext", "shrug", "face pull", "rear delt"],
-      shoulders: ["shoulder", "ohp", "military", "lateral raise", "front raise", "arnold", "delt", "upright row"],
-      biceps: ["bicep", "curl", "hammer", "preacher", "concentration"],
-      triceps: ["tricep", "pushdown", "skull", "close grip", "kickback", "extension"],
-      legs: ["squat", "leg press", "lunge", "calf", "hamstring", "quad", "glute", "hip thrust", "leg curl", "leg ext", "rdl", "split squat", "step up", "goblet"],
-      core: ["ab", "crunch", "plank", "sit up", "situp", "core", "oblique", "russian twist", "leg raise", "hollow", "woodchop", "pallof"],
-      cardio: ["run", "bike", "swim", "cycle", "jog", "sprint", "elliptical", "stair", "walk", "treadmill", "hiit"],
-    };
-    const CARDIO_LIST = ["run", "bike", "swim", "cycle", "jog", "sprint", "elliptical", "stair", "walk", "treadmill", "rowing machine"];
+    // Muscle groups — order matters: more specific phrases checked first
+    const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "cardio"];
+    const MUSCLE_RULES = [
+      // Multi-word phrases first (most specific wins)
+      { phrase: "chest supported row", group: "back" },
+      { phrase: "chest-supported row", group: "back" },
+      { phrase: "t-bar row", group: "back" },
+      { phrase: "t bar row", group: "back" },
+      { phrase: "cable row", group: "back" },
+      { phrase: "barbell row", group: "back" },
+      { phrase: "dumbbell row", group: "back" },
+      { phrase: "pendlay row", group: "back" },
+      { phrase: "seated row", group: "back" },
+      { phrase: "bent over row", group: "back" },
+      { phrase: "upright row", group: "shoulders" },
+      { phrase: "face pull", group: "back" },
+      { phrase: "rear delt", group: "back" },
+      { phrase: "back ext", group: "back" },
+      { phrase: "lat pulldown", group: "back" },
+      { phrase: "wide-grip lat", group: "back" },
+      { phrase: "close-grip lat", group: "back" },
+      { phrase: "pull up", group: "back" },
+      { phrase: "pullup", group: "back" },
+      { phrase: "chin up", group: "back" },
+      { phrase: "chinup", group: "back" },
+      { phrase: "pulldown", group: "back" },
+      { phrase: "shoulder press", group: "shoulders" },
+      { phrase: "overhead press", group: "shoulders" },
+      { phrase: "ohp", group: "shoulders" },
+      { phrase: "military press", group: "shoulders" },
+      { phrase: "arnold press", group: "shoulders" },
+      { phrase: "lateral raise", group: "shoulders" },
+      { phrase: "front raise", group: "shoulders" },
+      { phrase: "delt", group: "shoulders" },
+      { phrase: "shoulder", group: "shoulders" },
+      { phrase: "bench press", group: "chest" },
+      { phrase: "chest fly", group: "chest" },
+      { phrase: "chest press", group: "chest" },
+      { phrase: "cable fly", group: "chest" },
+      { phrase: "crossover", group: "chest" },
+      { phrase: "pec deck", group: "chest" },
+      { phrase: "pec", group: "chest" },
+      { phrase: "push up", group: "chest" },
+      { phrase: "pushup", group: "chest" },
+      { phrase: "incline dumbbell", group: "chest" },
+      { phrase: "decline dumbbell", group: "chest" },
+      { phrase: "fly", group: "chest" },
+      { phrase: "flye", group: "chest" },
+      { phrase: "bench", group: "chest" },
+      { phrase: "hip thrust", group: "glutes" },
+      { phrase: "glute bridge", group: "glutes" },
+      { phrase: "glute", group: "glutes" },
+      { phrase: "kickback", group: "glutes" },
+      { phrase: "leg curl", group: "hamstrings" },
+      { phrase: "hamstring", group: "hamstrings" },
+      { phrase: "rdl", group: "hamstrings" },
+      { phrase: "romanian deadlift", group: "hamstrings" },
+      { phrase: "stiff leg", group: "hamstrings" },
+      { phrase: "good morning", group: "hamstrings" },
+      { phrase: "nordic", group: "hamstrings" },
+      { phrase: "leg ext", group: "quads" },
+      { phrase: "leg extension", group: "quads" },
+      { phrase: "leg press", group: "quads" },
+      { phrase: "squat", group: "quads" },
+      { phrase: "split squat", group: "quads" },
+      { phrase: "lunge", group: "quads" },
+      { phrase: "step up", group: "quads" },
+      { phrase: "goblet", group: "quads" },
+      { phrase: "hack squat", group: "quads" },
+      { phrase: "quad", group: "quads" },
+      { phrase: "calf raise", group: "calves" },
+      { phrase: "calf", group: "calves" },
+      { phrase: "bicep curl", group: "biceps" },
+      { phrase: "bicep", group: "biceps" },
+      { phrase: "hammer curl", group: "biceps" },
+      { phrase: "preacher", group: "biceps" },
+      { phrase: "concentration curl", group: "biceps" },
+      { phrase: "curl", group: "biceps" },
+      { phrase: "tricep", group: "triceps" },
+      { phrase: "pushdown", group: "triceps" },
+      { phrase: "skull crush", group: "triceps" },
+      { phrase: "close grip", group: "triceps" },
+      { phrase: "extension", group: "triceps" },
+      { phrase: "dip", group: "chest" },
+      { phrase: "deadlift", group: "back" },
+      { phrase: "shrug", group: "back" },
+      { phrase: "row", group: "back" },
+      { phrase: "pull", group: "back" },
+      { phrase: "lat", group: "back" },
+      { phrase: "press", group: "chest" },
+      { phrase: "crunch", group: "core" },
+      { phrase: "plank", group: "core" },
+      { phrase: "sit up", group: "core" },
+      { phrase: "situp", group: "core" },
+      { phrase: "oblique", group: "core" },
+      { phrase: "russian twist", group: "core" },
+      { phrase: "leg raise", group: "core" },
+      { phrase: "hollow", group: "core" },
+      { phrase: "woodchop", group: "core" },
+      { phrase: "pallof", group: "core" },
+      { phrase: "ab ", group: "core" },
+      { phrase: "core", group: "core" },
+    ];
+    const CARDIO_LIST = ["run", "bike", "swim", "cycle", "jog", "sprint", "elliptical", "stair", "walk", "treadmill", "rowing machine", "hiit"];
 
     function detectMuscle(name) {
       const l = name.toLowerCase();
-      for (const [g, kw] of Object.entries(MUSCLE_MAP)) { if (kw.some(k => l.includes(k))) return g; }
+      for (const rule of MUSCLE_RULES) { if (l.includes(rule.phrase)) return rule.group; }
+      if (CARDIO_LIST.some(k => l.includes(k))) return "cardio";
       return "other";
     }
     function isCardio(name) { const l = name.toLowerCase(); return CARDIO_LIST.some(k => l.includes(k)); }
@@ -632,6 +726,18 @@
       const bp = db.blueprints?.[day];
 
       function startEdit() { setEditName(bp?.name || `${day} Session`); setEditExs(bp?.exercises?.map(e => e.name).join("\n") || ""); setEditing(true); }
+      function updateExMuscle(idx, newMuscle) {
+        persist(prev => {
+          const bps = { ...prev.blueprints };
+          const current = bps[day];
+          if (!current) return prev;
+          const exs = [...current.exercises];
+          exs[idx] = { ...exs[idx], muscle: newMuscle };
+          bps[day] = { ...current, exercises: exs };
+          return { ...prev, blueprints: bps };
+        });
+        notify("Muscle group updated", "success");
+      }
       function save() {
         const lines = editExs.split("\n").map(l => l.trim()).filter(Boolean);
         const exs = lines.map(name => ({ name, muscle: detectMuscle(name), isCardio: isCardio(name), duration: isCardio(name) ? 30 : undefined }));
@@ -640,7 +746,7 @@
       }
       function load() {
         if (!bp?.exercises?.length) return;
-        const exs = bp.exercises.map(e => ({ id: genId(), name: e.name, muscle: detectMuscle(e.name), isCardio: isCardio(e.name), sets: isCardio(e.name) ? [{ id: genId(), duration: e.duration || 0, completed: false }] : Array.from({ length: SETS_PER_EXERCISE }, () => ({ id: genId(), weight: 0, reps: 0, completed: false })) }));
+        const exs = bp.exercises.map(e => ({ id: genId(), name: e.name, muscle: e.muscle || detectMuscle(e.name), isCardio: isCardio(e.name), sets: isCardio(e.name) ? [{ id: genId(), duration: e.duration || 0, completed: false }] : Array.from({ length: SETS_PER_EXERCISE }, () => ({ id: genId(), weight: 0, reps: 0, completed: false })) }));
         setWo({ id: genId(), exercises: exs, currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify("Blueprint loaded!", "success");
       }
 
@@ -653,7 +759,13 @@
           h("div", { style: { fontSize: 16, fontWeight: 700, marginBottom: 12 } }, bp?.name || `${day} — No plan`),
           bp?.exercises?.length > 0 ? h(Fragment, null,
             h("div", { style: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 } },
-              bp.exercises.map((ex, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", padding: "8px 12px", background: C.bg, borderRadius: 8, fontSize: 13 } }, h("span", null, ex.name), h("span", { style: { color: C.textDim, fontSize: 11 } }, ex.muscle || detectMuscle(ex.name)))),
+              bp.exercises.map((ex, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.bg, borderRadius: 8, fontSize: 13 } },
+                h("span", { style: { flex: 1 } }, ex.name),
+                h("select", { value: ex.muscle || detectMuscle(ex.name), onChange: e => updateExMuscle(i, e.target.value), style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 8px", color: C.cyan, fontSize: 11, outline: "none", cursor: "pointer", fontFamily: "'JetBrains Mono'", textTransform: "capitalize" } },
+                  MUSCLE_GROUPS.map(m => h("option", { key: m, value: m }, m)),
+                  h("option", { value: "other" }, "other"),
+                ),
+              )),
             ),
             h("div", { style: { display: "flex", gap: 8 } },
               h("button", { onClick: load, style: { flex: 1, background: C.cyan, color: C.bg, border: "none", borderRadius: 10, padding: 14, fontWeight: 700, cursor: "pointer" } }, "Load & Start"),
@@ -723,7 +835,7 @@
                 h("div", { style: { fontSize: 12, color: C.amber, marginBottom: 8 } }, "Add Sets (Correction Mode)"),
                 h("select", { value: addMuscle, onChange: e => setAddMuscle(e.target.value), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, color: C.text, marginBottom: 8, outline: "none" } },
                   h("option", { value: "" }, "Select muscle group"),
-                  Object.keys(MUSCLE_MAP).map(m => h("option", { key: m, value: m }, m)),
+                  MUSCLE_GROUPS.map(m => h("option", { key: m, value: m }, m)),
                 ),
                 h("div", { style: { display: "flex", gap: 8 } },
                   h("input", { type: "number", value: addSets, onChange: e => setAddSets(parseInt(e.target.value) || 1), style: { width: 60, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, color: C.text, textAlign: "center", outline: "none" } }),
