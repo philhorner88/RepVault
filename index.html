@@ -392,33 +392,53 @@
       const [showAdd, setShowAdd] = useState(false);
       const [addText, setAddText] = useState("");
       const [showQuit, setShowQuit] = useState(false);
+      const [editingQueueIdx, setEditingQueueIdx] = useState(null);
+      const [editingQueueName, setEditingQueueName] = useState("");
 
       const timerRef = useRef(null);
       const clockRef = useRef(null);
-      const lastTick = useRef(Date.now());
       const backRef = useRef(0);
       const timers = db.settings?.timers || DEFAULT_TIMERS;
       const curEx = wo?.exercises[wo.currentExIdx];
       const totalSets = wo ? wo.exercises.reduce((s, e) => s + e.sets.length, 0) : 0;
       const doneSets = wo ? wo.exercises.reduce((s, e) => s + e.sets.filter(x => x.completed).length, 0) : 0;
 
-      // PB data for current exercise
-      const curPB = curEx ? db.pbs?.[curEx.name.toLowerCase()] : null;
+      // Determine which exercise to show stats for: current, or next during REST_EX
+      const statsEx = (phase === PHASES.REST_EX && wo) ? wo.exercises[wo.currentExIdx + 1] : curEx;
 
-      // Last performance — find the most recent session with this exercise and extract per-set weights
-      const lastPerf = useMemo(() => {
-        if (!curEx) return null;
-        const nm = curEx.name.toLowerCase();
+      // PB data
+      const curPB = statsEx ? db.pbs?.[statsEx.name.toLowerCase()] : null;
+
+      // Find the session where the PB weight was set
+      const pbSession = useMemo(() => {
+        if (!statsEx || !curPB) return null;
+        const nm = statsEx.name.toLowerCase();
         for (let i = db.history.length - 1; i >= 0; i--) {
           const ex = db.history[i].exercises?.find(e => e.name.toLowerCase() === nm);
-          if (ex) return {
-            date: db.history[i].date,
-            sets: ex.sets || [],
-            vol: (ex.sets || []).reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0),
-          };
+          if (ex && ex.sets?.some(s => s.weight === curPB.maxWeight)) return { date: db.history[i].date };
         }
         return null;
-      }, [curEx?.name, db.history]);
+      }, [statsEx?.name, curPB, db.history]);
+
+      // Last performance — most recent session with this exercise
+      const lastPerf = useMemo(() => {
+        if (!statsEx) return null;
+        const nm = statsEx.name.toLowerCase();
+        for (let i = db.history.length - 1; i >= 0; i--) {
+          const ex = db.history[i].exercises?.find(e => e.name.toLowerCase() === nm);
+          if (ex) {
+            const sets = ex.sets || [];
+            const maxW = Math.max(0, ...sets.map(s => s.weight || 0));
+            return {
+              date: db.history[i].date,
+              sets,
+              maxWeight: maxW,
+              vol: sets.reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0),
+            };
+          }
+        }
+        return null;
+      }, [statsEx?.name, db.history]);
 
       // Auto-populate weights from last session when exercise changes
       const prevExIdxRef = useRef(null);
@@ -450,11 +470,17 @@
         setWo(prev => {
           const next = deepClone(prev);
           next.exercises[ei].sets[si][field] = val;
-          // Weight continuity: Set 1 weight fills unfilled subsequent sets
-          if (field === "weight" && si === 0) {
-            for (let i = 1; i < next.exercises[ei].sets.length; i++) {
-              if (!next.exercises[ei].sets[i].weight) next.exercises[ei].sets[i].weight = val;
-            }
+          return next;
+        });
+      }
+
+      function spreadWeight(ei) {
+        setWo(prev => {
+          const next = deepClone(prev);
+          const w = next.exercises[ei].sets[0]?.weight;
+          if (!w) return prev;
+          for (let i = 1; i < next.exercises[ei].sets.length; i++) {
+            if (!next.exercises[ei].sets[i].weight) next.exercises[ei].sets[i].weight = w;
           }
           return next;
         });
@@ -462,24 +488,61 @@
 
       useEffect(() => { audio.init(); audio.startHeartbeat(); return () => audio.stopHeartbeat(); }, []);
 
-      // Timer tick — runs globally even when navigated away
+      // Wall-clock based timer — stores the absolute end time so we can catch up after lock/resume
+      const phaseEndTime = useRef(Date.now() + (db.settings?.timers?.prep || DEFAULT_TIMERS.prep) * 1000);
+
+      // Set the end time whenever phase changes
+      function setPhaseTimer(seconds) {
+        phaseEndTime.current = Date.now() + seconds * 1000;
+        setTimer(seconds);
+      }
+
+      // Timer tick — calculates remaining from wall clock
       useEffect(() => {
         if (paused || phase === PHASES.DONE || !wo) return;
-        lastTick.current = Date.now();
         timerRef.current = setInterval(() => {
-          const now = Date.now(), el = (now - lastTick.current) / 1000;
-          lastTick.current = now;
-          setTimer(prev => {
-            const n = prev - el;
-            if (n <= 3.1 && n > 2.9) audio.countdownPip();
-            if (n <= 2.1 && n > 1.9) audio.countdownPip();
-            if (n <= 1.1 && n > 0.9) audio.countdownPip();
-            if (n <= 0) { audio.phasePip(); advancePhase(); return 0; }
-            return n;
-          });
+          const remaining = (phaseEndTime.current - Date.now()) / 1000;
+          if (remaining <= 3.1 && remaining > 2.9) audio.countdownPip();
+          if (remaining <= 2.1 && remaining > 1.9) audio.countdownPip();
+          if (remaining <= 1.1 && remaining > 0.9) audio.countdownPip();
+          if (remaining <= 0) { audio.phasePip(); advancePhase(); return; }
+          setTimer(remaining);
         }, 100);
         return () => clearInterval(timerRef.current);
       }, [phase, paused, wo?.currentExIdx, wo?.currentSetIdx, wo]);
+
+      // Resume catch-up: when app becomes visible again, check if timer expired while locked
+      useEffect(() => {
+        function handleResume() {
+          if (document.visibilityState !== "visible" || paused || phase === PHASES.DONE || !wo) return;
+          const remaining = (phaseEndTime.current - Date.now()) / 1000;
+          if (remaining <= 0) {
+            // Phase expired while locked — advance
+            audio.phasePip();
+            advancePhase();
+          } else {
+            setTimer(remaining);
+          }
+        }
+        document.addEventListener("visibilitychange", handleResume);
+        window.addEventListener("focus", handleResume);
+        return () => { document.removeEventListener("visibilitychange", handleResume); window.removeEventListener("focus", handleResume); };
+      }, [phase, paused, wo?.currentExIdx, wo?.currentSetIdx, wo]);
+
+      // Pause/resume: adjust end time when pausing/unpausing
+      const pausedAtRef = useRef(null);
+      const remainingAtPause = useRef(0);
+      useEffect(() => {
+        if (paused) {
+          // Store how much time was left
+          pausedAtRef.current = Date.now();
+          remainingAtPause.current = Math.max(0, (phaseEndTime.current - Date.now()) / 1000);
+        } else if (pausedAtRef.current !== null) {
+          // Restore end time based on remaining
+          phaseEndTime.current = Date.now() + remainingAtPause.current * 1000;
+          pausedAtRef.current = null;
+        }
+      }, [paused]);
 
       // Session clock
       useEffect(() => {
@@ -488,22 +551,33 @@
         return () => clearInterval(clockRef.current);
       }, [wo?.startTime]);
 
+      // Media session controls for lock screen
+      useEffect(() => {
+        if (!("mediaSession" in navigator) || !wo) return;
+        try {
+          navigator.mediaSession.setActionHandler("play", () => setPaused(false));
+          navigator.mediaSession.setActionHandler("pause", () => setPaused(true));
+          navigator.mediaSession.setActionHandler("nexttrack", () => { clearInterval(timerRef.current); advancePhase(); });
+          navigator.mediaSession.setActionHandler("previoustrack", () => goBack());
+        } catch {}
+      }, [wo, phase]);
+
       useEffect(() => { if (curEx && wo) updateMedia(`${curEx.name} - Set ${wo.currentSetIdx + 1}`, `${phase} • ${fmtTime(timer)}`); }, [phase, timer, curEx?.name, wo?.currentSetIdx]);
 
       function advancePhase() {
         if (!wo) return;
         const ex = wo.exercises[wo.currentExIdx];
         if (!ex) { finish(); return; }
-        if (phase === PHASES.PREP) { setPhase(PHASES.WORK); setTimer(timers.work); audio.speak(`${ex.name}, Set ${wo.currentSetIdx + 1}, Work`); }
+        if (phase === PHASES.PREP) { setPhase(PHASES.WORK); setPhaseTimer(timers.work); audio.speak(`${ex.name}, Set ${wo.currentSetIdx + 1}, Work`); }
         else if (phase === PHASES.WORK) {
           setWo(prev => { const n = deepClone(prev); if (n.exercises[n.currentExIdx]?.sets[n.currentSetIdx]) n.exercises[n.currentExIdx].sets[n.currentSetIdx].completed = true; return n; });
           const lastSet = wo.currentSetIdx >= ex.sets.length - 1, lastEx = wo.currentExIdx >= wo.exercises.length - 1;
           if (lastSet && lastEx) { setPhase(PHASES.DONE); setTimer(0); audio.speak("Workout Complete"); }
-          else if (lastSet) { setPhase(PHASES.REST_EX); setTimer(timers.restEx); audio.speak("Rest between exercises"); }
-          else { setPhase(PHASES.REST_SET); setTimer(timers.restSet); audio.speak(`Rest. Next: Set ${wo.currentSetIdx + 2}`); }
+          else if (lastSet) { setPhase(PHASES.REST_EX); setPhaseTimer(timers.restEx); audio.speak("Rest between exercises"); }
+          else { setPhase(PHASES.REST_SET); setPhaseTimer(timers.restSet); audio.speak(`Rest. Next: Set ${wo.currentSetIdx + 2}`); }
         }
-        else if (phase === PHASES.REST_SET) { setWo(prev => ({ ...prev, currentSetIdx: prev.currentSetIdx + 1 })); setPhase(PHASES.WORK); setTimer(timers.work); audio.speak(`${ex.name}, Set ${wo.currentSetIdx + 2}, Work`); }
-        else if (phase === PHASES.REST_EX) { const ni = wo.currentExIdx + 1; setWo(prev => ({ ...prev, currentExIdx: ni, currentSetIdx: 0 })); setPhase(PHASES.PREP); setTimer(timers.prep); const ne = wo.exercises[ni]; if (ne) audio.speak(`Next: ${ne.name}`); }
+        else if (phase === PHASES.REST_SET) { setWo(prev => ({ ...prev, currentSetIdx: prev.currentSetIdx + 1 })); setPhase(PHASES.WORK); setPhaseTimer(timers.work); audio.speak(`${ex.name}, Set ${wo.currentSetIdx + 2}, Work`); }
+        else if (phase === PHASES.REST_EX) { const ni = wo.currentExIdx + 1; setWo(prev => ({ ...prev, currentExIdx: ni, currentSetIdx: 0 })); setPhase(PHASES.PREP); setPhaseTimer(timers.prep); const ne = wo.exercises[ni]; if (ne) audio.speak(`Next: ${ne.name}`); }
       }
 
       function skip() { clearInterval(timerRef.current); advancePhase(); }
@@ -512,11 +586,11 @@
         const now = Date.now();
         if (timer > 3 || now - backRef.current > 2000) {
           backRef.current = now;
-          if (phase === PHASES.WORK) setTimer(timers.work); else if (phase === PHASES.REST_SET) setTimer(timers.restSet);
-          else if (phase === PHASES.REST_EX) setTimer(timers.restEx); else if (phase === PHASES.PREP) setTimer(timers.prep);
+          if (phase === PHASES.WORK) setPhaseTimer(timers.work); else if (phase === PHASES.REST_SET) setPhaseTimer(timers.restSet);
+          else if (phase === PHASES.REST_EX) setPhaseTimer(timers.restEx); else if (phase === PHASES.PREP) setPhaseTimer(timers.prep);
         } else {
-          if (wo.currentSetIdx > 0) { setWo(prev => ({ ...prev, currentSetIdx: prev.currentSetIdx - 1 })); setPhase(PHASES.WORK); setTimer(timers.work); }
-          else if (wo.currentExIdx > 0) { const pi = wo.currentExIdx - 1; setWo(prev => ({ ...prev, currentExIdx: pi, currentSetIdx: prev.exercises[pi].sets.length - 1 })); setPhase(PHASES.WORK); setTimer(timers.work); }
+          if (wo.currentSetIdx > 0) { setWo(prev => ({ ...prev, currentSetIdx: prev.currentSetIdx - 1 })); setPhase(PHASES.WORK); setPhaseTimer(timers.work); }
+          else if (wo.currentExIdx > 0) { const pi = wo.currentExIdx - 1; setWo(prev => ({ ...prev, currentExIdx: pi, currentSetIdx: prev.exercises[pi].sets.length - 1 })); setPhase(PHASES.WORK); setPhaseTimer(timers.work); }
         }
       }
 
@@ -579,6 +653,42 @@
         notify("Removed from queue", "info");
       }
 
+      function startEditQueue(exIdx) {
+        setEditingQueueIdx(exIdx);
+        setEditingQueueName(wo.exercises[exIdx].name);
+      }
+
+      function saveEditQueue(exIdx) {
+        if (!editingQueueName.trim()) { setEditingQueueIdx(null); return; }
+        setWo(prev => {
+          const next = deepClone(prev);
+          next.exercises[exIdx].name = editingQueueName.trim();
+          next.exercises[exIdx].muscle = detectMuscle(editingQueueName.trim());
+          next.exercises[exIdx].isCardio = isCardio(editingQueueName.trim());
+          return next;
+        });
+        setEditingQueueIdx(null);
+        notify("Exercise updated", "success");
+      }
+
+      function jumpToExercise(exIdx) {
+        if (exIdx === wo.currentExIdx) return;
+        setWo(prev => ({ ...prev, currentExIdx: exIdx, currentSetIdx: 0 }));
+        setPhase(PHASES.PREP);
+        setPhaseTimer(timers.prep);
+        const ex = wo.exercises[exIdx];
+        if (ex) audio.speak(`Jumping to ${ex.name}`);
+        notify(`Jumped to ${wo.exercises[exIdx]?.name}`, "success");
+      }
+
+      function updateExMuscleWo(exIdx, newMuscle) {
+        setWo(prev => {
+          const next = deepClone(prev);
+          next.exercises[exIdx].muscle = newMuscle;
+          return next;
+        });
+      }
+
       function addExercise(bulk) {
         if (!addText.trim()) return;
         const lines = bulk ? addText.split("\n").map(l => l.trim()).filter(Boolean) : [addText.trim()];
@@ -636,18 +746,21 @@
             h("p", { style: { color: C.textDim, marginTop: 4 } }, `${fmtDur(clock)} • ${doneSets} sets`),
             h("button", { onClick: finish, style: { marginTop: 24, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
           ),
-          // PB & Last Performance display
-          curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "12px 16px 0" } },
-            (curPB || lastPerf) && h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
+          // PB & Last Performance display — shows for current exercise, or upcoming exercise during REST_EX
+          statsEx && phase !== PHASES.DONE && !statsEx.isCardio && (curPB || lastPerf) && h("div", { style: { padding: "12px 16px 0" } },
+            phase === PHASES.REST_EX && h("div", { style: { fontSize: 11, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 } }, `Up next: ${statsEx.name}`),
+            h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
               curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.amber}30` } },
                 h("div", { style: { fontSize: 10, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "🏆 All-Time PB"),
-                h("div", { style: { fontSize: 14, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${curPB.maxWeight}kg`),
-                h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `Best reps: ${curPB.maxReps} • Vol: ${curPB.maxVolume}kg`),
+                h("div", { style: { fontSize: 18, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${curPB.maxWeight}kg`),
+                pbSession && h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, new Date(pbSession.date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })),
+                h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 1 } }, `${curPB.maxReps} reps • ${curPB.maxVolume}kg vol`),
               ),
               lastPerf && h("div", { style: { flex: 1, background: `${C.cyan}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.cyan}30` } },
                 h("div", { style: { fontSize: 10, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "📅 Last Session"),
-                h("div", { style: { fontSize: 14, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${lastPerf.vol}kg vol`),
-                h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, lastPerf.sets.map((s, i) => `S${i+1}: ${s.weight}kg×${s.reps}`).join(" • ")),
+                h("div", { style: { fontSize: 18, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${lastPerf.maxWeight}kg`),
+                h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, new Date(lastPerf.date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })),
+                h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 1 } }, lastPerf.sets.map((s, i) => `${s.weight}×${s.reps}`).join(" · ")),
               ),
             ),
           ),
@@ -658,7 +771,7 @@
                 curEx.sets.map((s, si) => h("div", { key: si, style: { display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 10, background: si === wo.currentSetIdx ? `${glow}10` : "transparent", border: si === wo.currentSetIdx ? `1px solid ${glow}30` : "1px solid transparent", opacity: s.completed ? 0.5 : 1 } },
                   h("div", { style: { width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: "'JetBrains Mono'", background: s.completed ? C.green : C.bg, color: s.completed ? C.bg : C.textDim, border: `1px solid ${s.completed ? C.green : C.border}` } }, s.completed ? "✓" : si + 1),
                   h("div", { style: { flex: 1, display: "flex", gap: 8 } },
-                    h("input", { type: "number", inputMode: "decimal", value: s.weight || "", onChange: e => updateSet(wo.currentExIdx, si, "weight", parseFloat(e.target.value) || 0), placeholder: "KG", style: { width: "100%", background: C.bg, border: `1px solid ${C.cyanDim}`, borderRadius: 8, padding: "10px 8px", color: C.cyan, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                    h("input", { type: "number", inputMode: "decimal", value: s.weight || "", onChange: e => updateSet(wo.currentExIdx, si, "weight", parseFloat(e.target.value) || 0), onBlur: si === 0 ? () => spreadWeight(wo.currentExIdx) : undefined, placeholder: "KG", style: { width: "100%", background: C.bg, border: `1px solid ${C.cyanDim}`, borderRadius: 8, padding: "10px 8px", color: C.cyan, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
                     h("input", { type: "number", inputMode: "numeric", value: s.reps || "", onChange: e => updateSet(wo.currentExIdx, si, "reps", parseInt(e.target.value) || 0), placeholder: "Reps", style: { width: "100%", background: C.bg, border: `1px solid ${C.greenDim}`, borderRadius: 8, padding: "10px 8px", color: C.green, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
                   ),
                 )),
@@ -672,19 +785,53 @@
               h("input", { type: "number", inputMode: "numeric", value: curEx.sets[0]?.duration || "", onChange: e => updateSet(wo.currentExIdx, 0, "duration", parseInt(e.target.value) || 0), placeholder: "30", style: { width: 120, background: C.bg, border: `1px solid ${C.amberDim}`, borderRadius: 12, padding: 14, color: C.amber, fontSize: 28, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
             ),
           ),
-          // Queue with reorder controls
+          // Full exercise list with jump-to
           h("div", { style: { padding: "8px 16px" } },
-            h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingLeft: 4 } }, `Queue (${Math.max(0, wo.exercises.length - wo.currentExIdx - 1)} remaining)`),
+            h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, paddingLeft: 4 } }, `Exercises (${wo.currentExIdx + 1}/${wo.exercises.length})`),
+            // Completed exercises
+            wo.exercises.map((ex, i) => {
+              if (i > wo.currentExIdx) return null;
+              const isCurrent = i === wo.currentExIdx;
+              return h("div", { key: ex.id, style: { padding: "8px 12px", borderRadius: 10, background: isCurrent ? `${C.green}10` : `${C.surface}80`, border: `1px solid ${isCurrent ? C.green + "40" : C.border}50`, fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, opacity: isCurrent ? 1 : 0.6 } },
+                h("div", { style: { flex: 1, minWidth: 0 } },
+                  h("span", { style: { color: isCurrent ? C.green : C.textDim, fontWeight: isCurrent ? 600 : 400 } }, isCurrent ? "● " : "✓ ", ex.name),
+                  isCurrent && h("span", { style: { fontSize: 10, marginLeft: 6, color: C.green } }, "CURRENT"),
+                ),
+                h("div", { style: { display: "flex", gap: 4, alignItems: "center", flexShrink: 0 } },
+                  h("select", { value: ex.muscle, onChange: e => updateExMuscleWo(i, e.target.value), style: { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 6px", color: C.cyan, fontSize: 10, outline: "none", cursor: "pointer", fontFamily: "'JetBrains Mono'" } },
+                    MUSCLE_GROUPS.map(m => h("option", { key: m, value: m }, m)),
+                    h("option", { value: "other" }, "other"),
+                  ),
+                  !isCurrent && h("button", { onClick: () => jumpToExercise(i), style: { background: `${C.amber}15`, border: `1px solid ${C.amber}30`, borderRadius: 6, padding: "4px 10px", color: C.amber, fontSize: 10, fontWeight: 700, cursor: "pointer" } }, "GO"),
+                ),
+              );
+            }),
+            // Divider
+            wo.currentExIdx < wo.exercises.length - 1 && h("div", { style: { fontSize: 10, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, padding: "8px 4px 4px", opacity: 0.5 } }, `Queue (${wo.exercises.length - wo.currentExIdx - 1} remaining)`),
+            // Upcoming exercises
             wo.exercises.map((ex, i) => {
               if (i <= wo.currentExIdx) return null;
               const isNext = i === wo.currentExIdx + 1;
-              return h("div", { key: ex.id, style: { padding: "10px 12px", borderRadius: 10, background: C.surface, border: `1px solid ${isNext ? C.cyan + "40" : C.border}`, fontSize: 13, color: C.textDim, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
-                h("div", { style: { flex: 1, minWidth: 0 } },
-                  h("span", { style: { color: isNext ? C.cyan : C.textDim, fontWeight: isNext ? 600 : 400 } }, isNext ? "▶ " : "", ex.name),
-                  h("span", { style: { fontSize: 11, marginLeft: 6 } }, ex.isCardio ? "cardio" : `${ex.sets.length}s`),
+              const isEditing = editingQueueIdx === i;
+              return h("div", { key: ex.id, style: { padding: "10px 12px", borderRadius: 10, background: isEditing ? C.surfaceLight : C.surface, border: `1px solid ${isNext ? C.cyan + "40" : isEditing ? C.amber + "40" : C.border}`, fontSize: 13, color: C.textDim, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
+                h("div", { style: { flex: 1, minWidth: 0, marginRight: 8 } },
+                  isEditing
+                    ? h("div", { style: { display: "flex", gap: 4, alignItems: "center" } },
+                        h("input", { type: "text", value: editingQueueName, onChange: e => setEditingQueueName(e.target.value), onKeyDown: e => { if (e.key === "Enter") saveEditQueue(i); if (e.key === "Escape") setEditingQueueIdx(null); }, autoFocus: true, style: { flex: 1, background: C.bg, border: `1px solid ${C.amber}40`, borderRadius: 6, padding: "6px 8px", color: C.text, fontSize: 13, outline: "none" } }),
+                        h("button", { onClick: () => saveEditQueue(i), style: { background: C.amber, color: C.bg, border: "none", borderRadius: 6, padding: "6px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer", flexShrink: 0 } }, "✓"),
+                      )
+                    : h("div", { onClick: () => startEditQueue(i), style: { cursor: "pointer" } },
+                        h("span", { style: { color: isNext ? C.cyan : C.textDim, fontWeight: isNext ? 600 : 400 } }, isNext ? "▶ " : "", ex.name),
+                        h("span", { style: { fontSize: 11, marginLeft: 6 } }, ex.isCardio ? "cardio" : `${ex.sets.length}s`),
+                        h("span", { style: { fontSize: 9, marginLeft: 6, color: C.textDim, opacity: 0.5 } }, "✏️"),
+                      ),
                 ),
-                h("div", { style: { display: "flex", gap: 2, flexShrink: 0 } },
-                  !isNext && h("button", { onClick: () => moveToNext(i), title: "Move to next", style: { background: `${C.cyan}15`, border: `1px solid ${C.cyan}30`, borderRadius: 6, padding: "4px 8px", color: C.cyan, fontSize: 10, fontWeight: 700, cursor: "pointer" } }, "NEXT"),
+                !isEditing && h("div", { style: { display: "flex", gap: 2, flexShrink: 0, alignItems: "center" } },
+                  h("select", { value: ex.muscle, onChange: e => updateExMuscleWo(i, e.target.value), onClick: e => e.stopPropagation(), style: { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 6px", color: C.cyan, fontSize: 10, outline: "none", cursor: "pointer", fontFamily: "'JetBrains Mono'" } },
+                    MUSCLE_GROUPS.map(m => h("option", { key: m, value: m }, m)),
+                    h("option", { value: "other" }, "other"),
+                  ),
+                  h("button", { onClick: () => jumpToExercise(i), title: "Jump to", style: { background: `${C.green}15`, border: `1px solid ${C.green}30`, borderRadius: 6, padding: "4px 8px", color: C.green, fontSize: 10, fontWeight: 700, cursor: "pointer" } }, "GO"),
                   h("button", { onClick: () => moveUp(i), title: "Move up", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", color: C.textDim, fontSize: 12, cursor: "pointer", opacity: i <= wo.currentExIdx + 1 ? 0.3 : 1 } }, "↑"),
                   h("button", { onClick: () => moveDown(i), title: "Move down", style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px", color: C.textDim, fontSize: 12, cursor: "pointer", opacity: i >= wo.exercises.length - 1 ? 0.3 : 1 } }, "↓"),
                   h("button", { onClick: () => removeFromQueue(i), title: "Remove", style: { background: "none", border: `1px solid ${C.red}30`, borderRadius: 6, padding: "4px 6px", color: C.red, fontSize: 11, cursor: "pointer" } }, "✕"),
@@ -862,7 +1009,12 @@
     // ANALYTICS
     // ============================================================
     function Analytics() {
-      const { db } = useContext(AppCtx);
+      const { db, persist, notify } = useContext(AppCtx);
+      const [editingPB, setEditingPB] = useState(null);
+      const [pbWeight, setPbWeight] = useState(0);
+      const [pbReps, setPbReps] = useState(0);
+      const [pbVol, setPbVol] = useState(0);
+
       const weeklyData = useMemo(() => {
         const weeks = {};
         db.history.forEach(x => { const d = new Date(x.date); const ws = new Date(d); ws.setDate(d.getDate() - d.getDay() + 1); const k = ws.toISOString().split("T")[0]; if (!weeks[k]) weeks[k] = { sessions: 0, volume: 0 }; weeks[k].sessions++; (x.exercises || []).forEach(ex => { weeks[k].volume += (ex.sets || []).reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0); }); });
@@ -872,7 +1024,17 @@
       const curVol = weeklyData.length > 0 ? weeklyData[weeklyData.length - 1][1].volume : 0;
       const lastVol = weeklyData.length > 1 ? weeklyData[weeklyData.length - 2][1].volume : 0;
       const change = lastVol > 0 ? ((curVol - lastVol) / lastVol * 100).toFixed(1) : 0;
-      const pbs = Object.entries(db.pbs || {}).sort((a, b) => b[1].maxWeight - a[1].maxWeight).slice(0, 10);
+      const pbs = Object.entries(db.pbs || {}).sort((a, b) => b[1].maxWeight - a[1].maxWeight);
+
+      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.maxReps); setPbVol(pb.maxVolume); }
+      function savePB() {
+        persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { maxWeight: pbWeight, maxReps: pbReps, maxVolume: pbVol } } }));
+        setEditingPB(null); notify("PB updated", "success");
+      }
+      function deletePB(name) {
+        persist(prev => { const pbs = { ...prev.pbs }; delete pbs[name]; return { ...prev, pbs }; });
+        notify(`Deleted PB: ${name}`, "info");
+      }
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
         h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "Analytics"),
@@ -900,18 +1062,43 @@
             }),
           ),
         ),
-        // PBs
+        // PBs — editable
         h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` } },
           h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "🏆 Personal Bests"),
           pbs.length === 0 && h("div", { style: { color: C.textDim, fontSize: 13 } }, "No PBs recorded yet"),
-          pbs.map(([name, pb]) => h("div", { key: name, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.bg, borderRadius: 8, marginBottom: 4 } },
-            h("span", { style: { fontSize: 13, fontWeight: 500, textTransform: "capitalize" } }, name),
-            h("div", { style: { display: "flex", gap: 12 } },
-              h("span", { style: { fontSize: 12, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, `${pb.maxWeight}kg`),
-              h("span", { style: { fontSize: 12, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.maxReps}r`),
-              h("span", { style: { fontSize: 12, color: C.amber, fontFamily: "'JetBrains Mono'" } }, `${pb.maxVolume}v`),
-            ),
-          )),
+          pbs.map(([name, pb]) => editingPB === name
+            ? h("div", { key: name, className: "slide-up", style: { padding: "12px", background: C.bg, borderRadius: 10, marginBottom: 4, border: `1px solid ${C.amber}40` } },
+                h("div", { style: { fontSize: 13, fontWeight: 600, textTransform: "capitalize", marginBottom: 8, color: C.amber } }, name),
+                h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
+                  h("div", { style: { flex: 1 } },
+                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Weight (kg)"),
+                    h("input", { type: "number", inputMode: "decimal", value: pbWeight || "", onChange: e => setPbWeight(parseFloat(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.cyan, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  ),
+                  h("div", { style: { flex: 1 } },
+                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Reps"),
+                    h("input", { type: "number", inputMode: "numeric", value: pbReps || "", onChange: e => setPbReps(parseInt(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.green, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  ),
+                  h("div", { style: { flex: 1 } },
+                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Volume"),
+                    h("input", { type: "number", inputMode: "numeric", value: pbVol || "", onChange: e => setPbVol(parseInt(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.amber, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  ),
+                ),
+                h("div", { style: { display: "flex", gap: 8 } },
+                  h("button", { onClick: savePB, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 12 } }, "Save"),
+                  h("button", { onClick: () => setEditingPB(null), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontWeight: 600, cursor: "pointer", fontSize: 12 } }, "Cancel"),
+                ),
+              )
+            : h("div", { key: name, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.bg, borderRadius: 8, marginBottom: 4 } },
+                h("span", { style: { fontSize: 13, fontWeight: 500, textTransform: "capitalize", flex: 1 } }, name),
+                h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                  h("span", { style: { fontSize: 12, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, `${pb.maxWeight}kg`),
+                  h("span", { style: { fontSize: 12, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.maxReps}r`),
+                  h("span", { style: { fontSize: 12, color: C.amber, fontFamily: "'JetBrains Mono'" } }, `${pb.maxVolume}v`),
+                  h("button", { onClick: () => startEditPB(name, pb), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 8px", color: C.textDim, fontSize: 10, cursor: "pointer" } }, "✏️"),
+                  h("button", { onClick: () => deletePB(name), style: { background: "none", border: `1px solid ${C.red}30`, borderRadius: 6, padding: "3px 8px", color: C.red, fontSize: 10, cursor: "pointer" } }, "✕"),
+                ),
+              ),
+          ),
         ),
       );
     }
