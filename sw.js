@@ -1,4 +1,4 @@
-const CACHE_NAME = "repvault-v4";
+const CACHE_NAME = "repvault-v11";
 const ASSETS = [
   ".",
   "index.html",
