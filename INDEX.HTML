@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -6,17 +7,20 @@
   <title>RepVault</title>
 
   <!-- PWA Meta -->
+
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#0a0a0f">
   <meta name="background-color" content="#0a0a0f">
 
   <!-- iOS PWA Meta -->
+
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="RepVault">
   <link rel="apple-touch-icon" href="icon-192.png">
 
   <!-- Fonts -->
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -38,12 +42,15 @@
     .fade-in { animation: fadeIn 0.3s ease-out; }
     .slide-up { animation: slideUp 0.4s ease-out; }
   </style>
+
 </head>
 <body>
   <div id="root"></div>
 
   <!-- React via CDN -->
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 
   <script>
@@ -440,14 +447,13 @@
         return null;
       }, [statsEx?.name, db.history]);
 
-      // Auto-populate weights from last session when exercise changes
+      // Auto-populate weights (not reps) from last session when exercise changes
       const prevExIdxRef = useRef(null);
       useEffect(() => {
         if (!wo || !curEx || curEx.isCardio) return;
         if (prevExIdxRef.current === wo.currentExIdx) return;
         prevExIdxRef.current = wo.currentExIdx;
         if (lastPerf && lastPerf.sets.length > 0) {
-          // Only auto-fill if sets have no weight yet (fresh exercise)
           const allEmpty = curEx.sets.every(s => !s.weight || s.weight === 0);
           if (allEmpty) {
             setWo(prev => {
@@ -457,7 +463,7 @@
                 const historySet = lastPerf.sets[i] || lastPerf.sets[lastPerf.sets.length - 1];
                 if (historySet) {
                   s.weight = historySet.weight || 0;
-                  s.reps = historySet.reps || 0;
+                  // Don't pre-populate reps — user enters fresh each set
                 }
               });
               return next;
@@ -1013,22 +1019,24 @@
       const [editingPB, setEditingPB] = useState(null);
       const [pbWeight, setPbWeight] = useState(0);
       const [pbReps, setPbReps] = useState(0);
-      const [pbVol, setPbVol] = useState(0);
 
+      // Weekly sessions data for chart
       const weeklyData = useMemo(() => {
         const weeks = {};
-        db.history.forEach(x => { const d = new Date(x.date); const ws = new Date(d); ws.setDate(d.getDate() - d.getDay() + 1); const k = ws.toISOString().split("T")[0]; if (!weeks[k]) weeks[k] = { sessions: 0, volume: 0 }; weeks[k].sessions++; (x.exercises || []).forEach(ex => { weeks[k].volume += (ex.sets || []).reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0); }); });
+        db.history.forEach(x => { const d = new Date(x.date); const ws = new Date(d); ws.setDate(d.getDate() - d.getDay() + 1); const k = ws.toISOString().split("T")[0]; if (!weeks[k]) weeks[k] = { sessions: 0, sets: 0 }; weeks[k].sessions++; (x.exercises || []).forEach(ex => { weeks[k].sets += (ex.sets || []).filter(s => s.completed).length; }); });
         return Object.entries(weeks).sort((a, b) => a[0].localeCompare(b[0])).slice(-8);
       }, [db.history]);
 
-      const curVol = weeklyData.length > 0 ? weeklyData[weeklyData.length - 1][1].volume : 0;
-      const lastVol = weeklyData.length > 1 ? weeklyData[weeklyData.length - 2][1].volume : 0;
-      const change = lastVol > 0 ? ((curVol - lastVol) / lastVol * 100).toFixed(1) : 0;
+      const curSets = weeklyData.length > 0 ? weeklyData[weeklyData.length - 1][1].sets : 0;
+      const lastSets = weeklyData.length > 1 ? weeklyData[weeklyData.length - 2][1].sets : 0;
+      const change = lastSets > 0 ? ((curSets - lastSets) / lastSets * 100).toFixed(0) : 0;
+      const curSessions = weeklyData.length > 0 ? weeklyData[weeklyData.length - 1][1].sessions : 0;
+
       const pbs = Object.entries(db.pbs || {}).sort((a, b) => b[1].maxWeight - a[1].maxWeight);
 
-      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.maxReps); setPbVol(pb.maxVolume); }
+      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.maxReps); }
       function savePB() {
-        persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { maxWeight: pbWeight, maxReps: pbReps, maxVolume: pbVol } } }));
+        persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { ...prev.pbs[editingPB], maxWeight: pbWeight, maxReps: pbReps } } }));
         setEditingPB(null); notify("PB updated", "success");
       }
       function deletePB(name) {
@@ -1038,24 +1046,24 @@
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
         h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "Analytics"),
-        // Volume trend
+        // Weekly summary
         h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "Volume Trend"),
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "This Week"),
           h("div", { style: { display: "flex", gap: 16, alignItems: "flex-end" } },
-            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "This Week"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, curVol > 1000 ? `${(curVol / 1000).toFixed(1)}k` : curVol)),
-            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "Last Week"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, lastVol > 1000 ? `${(lastVol / 1000).toFixed(1)}k` : lastVol)),
-            h("div", { style: { padding: "6px 14px", borderRadius: 20, fontSize: 14, fontWeight: 700, background: change >= 0 ? C.greenDim : C.redDim, color: change >= 0 ? C.green : C.red } }, `${change >= 0 ? "↑" : "↓"} ${Math.abs(change)}%`),
+            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "Working Sets"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, curSets)),
+            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "Sessions"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, curSessions)),
+            lastSets > 0 && h("div", { style: { padding: "6px 14px", borderRadius: 20, fontSize: 14, fontWeight: 700, background: change >= 0 ? C.greenDim : C.redDim, color: change >= 0 ? C.green : C.red } }, `${change >= 0 ? "↑" : "↓"} ${Math.abs(change)}%`),
           ),
         ),
-        // Chart
+        // Chart — weekly sets
         weeklyData.length > 0 && h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 } }, "Weekly Volume"),
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 } }, "Weekly Sets"),
           h("div", { style: { display: "flex", gap: 4, alignItems: "flex-end", height: 120 } },
             weeklyData.map(([w, d], i) => {
-              const max = Math.max(...weeklyData.map(x => x[1].volume), 1);
-              const ht = (d.volume / max) * 100;
+              const max = Math.max(...weeklyData.map(x => x[1].sets), 1);
+              const ht = (d.sets / max) * 100;
               return h("div", { key: w, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 } },
-                h("div", { style: { fontSize: 9, color: C.textDim } }, d.volume > 1000 ? `${(d.volume / 1000).toFixed(0)}k` : d.volume),
+                h("div", { style: { fontSize: 9, color: C.textDim } }, d.sets),
                 h("div", { style: { width: "100%", height: `${ht}%`, minHeight: 4, background: i === weeklyData.length - 1 ? C.cyan : C.border, borderRadius: 4 } }),
                 h("div", { style: { fontSize: 9, color: C.textDim } }, new Date(w).toLocaleDateString("en-AU", { day: "numeric", month: "short" })),
               );
@@ -1075,27 +1083,22 @@
                     h("input", { type: "number", inputMode: "decimal", value: pbWeight || "", onChange: e => setPbWeight(parseFloat(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.cyan, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
                   ),
                   h("div", { style: { flex: 1 } },
-                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Reps"),
+                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Max Reps"),
                     h("input", { type: "number", inputMode: "numeric", value: pbReps || "", onChange: e => setPbReps(parseInt(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.green, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
-                  ),
-                  h("div", { style: { flex: 1 } },
-                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Volume"),
-                    h("input", { type: "number", inputMode: "numeric", value: pbVol || "", onChange: e => setPbVol(parseInt(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.amber, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
                   ),
                 ),
                 h("div", { style: { display: "flex", gap: 8 } },
                   h("button", { onClick: savePB, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 12 } }, "Save"),
+                  h("button", { onClick: () => deletePB(name), style: { flex: 1, background: C.red, color: "#fff", border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 12 } }, "Delete"),
                   h("button", { onClick: () => setEditingPB(null), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontWeight: 600, cursor: "pointer", fontSize: 12 } }, "Cancel"),
                 ),
               )
-            : h("div", { key: name, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.bg, borderRadius: 8, marginBottom: 4 } },
+            : h("div", { key: name, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: C.bg, borderRadius: 8, marginBottom: 4, cursor: "pointer" }, onClick: () => startEditPB(name, pb) },
                 h("span", { style: { fontSize: 13, fontWeight: 500, textTransform: "capitalize", flex: 1 } }, name),
-                h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
-                  h("span", { style: { fontSize: 12, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, `${pb.maxWeight}kg`),
-                  h("span", { style: { fontSize: 12, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.maxReps}r`),
-                  h("span", { style: { fontSize: 12, color: C.amber, fontFamily: "'JetBrains Mono'" } }, `${pb.maxVolume}v`),
-                  h("button", { onClick: () => startEditPB(name, pb), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 8px", color: C.textDim, fontSize: 10, cursor: "pointer" } }, "✏️"),
-                  h("button", { onClick: () => deletePB(name), style: { background: "none", border: `1px solid ${C.red}30`, borderRadius: 6, padding: "3px 8px", color: C.red, fontSize: 10, cursor: "pointer" } }, "✕"),
+                h("div", { style: { display: "flex", gap: 12, alignItems: "center" } },
+                  h("span", { style: { fontSize: 13, color: C.cyan, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${pb.maxWeight}kg`),
+                  h("span", { style: { fontSize: 13, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.maxReps}r`),
+                  h("span", { style: { fontSize: 11, color: C.textDim, marginLeft: 4 } }, "✏️"),
                 ),
               ),
           ),
@@ -1111,6 +1114,19 @@
       const t = db.settings?.timers || DEFAULT_TIMERS;
       function upd(k, v) { persist(prev => ({ ...prev, settings: { ...prev.settings, timers: { ...(prev.settings?.timers || DEFAULT_TIMERS), [k]: parseInt(v) || 0 } } })); }
       function clearAll() { if (confirm("This will erase ALL data. Are you sure?")) { persist(emptyDB()); notify("All data cleared", "warn"); } }
+      function forceUpdate() {
+        if ("serviceWorker" in navigator) {
+          navigator.serviceWorker.getRegistrations().then(regs => {
+            regs.forEach(r => r.unregister());
+          });
+          caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))).then(() => {
+            notify("Cache cleared! Reloading...", "success");
+            setTimeout(() => window.location.reload(true), 500);
+          });
+        } else {
+          window.location.reload(true);
+        }
+      }
       const fields = [{ key: "prep", label: "Prep Timer", color: C.amber }, { key: "work", label: "Work Timer", color: C.cyan }, { key: "restSet", label: "Rest (Set)", color: C.green }, { key: "restEx", label: "Rest (Exercise)", color: C.purple }];
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
@@ -1122,7 +1138,11 @@
             h("input", { type: "number", value: t[f.key], onChange: e => upd(f.key, e.target.value), style: { width: 80, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.text, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
           )),
         ),
+        // Force update button
+        h("button", { onClick: forceUpdate, style: { width: "100%", background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "🔄 Force Update App"),
+        h("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", marginBottom: 12 } }, "Clears cache and reloads. Your data is safe."),
         h("button", { onClick: clearAll, style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v13"),
       );
     }
 
@@ -1165,12 +1185,25 @@
     // --- Mount ---
     ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
 
-    // --- Register Service Worker ---
+    // --- Register Service Worker with forced update check ---
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("sw.js").catch(err => console.log("SW registration failed:", err));
+        navigator.serviceWorker.register("sw.js").then(reg => {
+          // Check for updates every time app loads
+          reg.update();
+          // Listen for new SW and reload
+          reg.addEventListener("updatefound", () => {
+            const newSW = reg.installing;
+            newSW.addEventListener("statechange", () => {
+              if (newSW.state === "activated") {
+                window.location.reload();
+              }
+            });
+          });
+        }).catch(err => console.log("SW registration failed:", err));
       });
     }
   </script>
+
 </body>
 </html>
