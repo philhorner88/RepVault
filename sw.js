@@ -1,4 +1,4 @@
-const CACHE_NAME = “repvault-v13”;
+const CACHE_NAME = “repvault-v14”;
 const ASSETS = [
 “manifest.json”,
 “icon-192.png”,
