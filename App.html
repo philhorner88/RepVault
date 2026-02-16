@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>RepVault</title>
+<meta name="theme-color" content="#0a0a0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RepVault">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{background:#0a0a0f;color:#e8e8f0;font-family:'Outfit',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+  .c{text-align:center;max-width:340px}
+  h1{font-size:28px;margin-bottom:8px;background:linear-gradient(135deg,#00e5ff,#39ff14);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  p{color:#8888a0;font-size:13px;margin-bottom:20px}
+  #s{color:#00e5ff;font-size:14px;min-height:40px;margin-bottom:12px}
+  .ok{color:#39ff14!important}
+  .bar{width:100%;height:4px;background:#1a1a2a;border-radius:2px;overflow:hidden;margin-bottom:20px}
+  .fill{height:100%;background:#00e5ff;border-radius:2px;transition:width 0.3s}
+</style>
+</head>
+<body>
+<div class="c">
+  <h1>REPVAULT</h1>
+  <p>Preparing latest version...</p>
+  <div class="bar"><div class="fill" id="bar" style="width:0%"></div></div>
+  <div id="s">Checking for updates...</div>
+</div>
+<script>
+(async function() {
+  const s = document.getElementById('s');
+  const bar = document.getElementById('bar');
+
+// Step 1: Kill ALL service workers
+bar.style.width = ‘25%’;
+s.textContent = ‘Clearing old service workers…’;
+try {
+if (‘serviceWorker’ in navigator) {
+const regs = await navigator.serviceWorker.getRegistrations();
+for (const r of regs) await r.unregister();
+}
+} catch(e) {}
+
+// Step 2: Nuke ALL caches
+bar.style.width = ‘50%’;
+s.textContent = ‘Clearing old cache…’;
+try {
+const keys = await caches.keys();
+for (const k of keys) await caches.delete(k);
+} catch(e) {}
+
+// Step 3: Verify data
+bar.style.width = ‘75%’;
+s.textContent = ‘Verifying your data…’;
+await new Promise(r => setTimeout(r, 500));
+try {
+const d = localStorage.getItem(‘repvault_v2_master’);
+if (d) {
+const p = JSON.parse(d);
+s.textContent = `Data safe: ${p.history?.length||0} sessions, ${Object.keys(p.pbs||{}).length} PBs`;
+} else {
+s.textContent = ‘Fresh install — no existing data.’;
+}
+} catch(e) {
+s.textContent = ‘Ready.’;
+}
+s.className = ‘ok’;
+
+// Step 4: Redirect to app with cache bust
+bar.style.width = ‘100%’;
+await new Promise(r => setTimeout(r, 1000));
+window.location.replace(‘index.html?v=’ + Date.now());
+})();
+</script>
+
+</body>
+</html>
