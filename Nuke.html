@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RepVault Update</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e8e8f0; font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+  .card { background: #12121a; border-radius: 20px; padding: 40px 30px; text-align: center; max-width: 360px; border: 1px solid #2a2a3a; }
+  h1 { font-size: 24px; margin-bottom: 8px; }
+  .sub { color: #8888a0; font-size: 14px; margin-bottom: 24px; }
+  #status { color: #00e5ff; font-size: 14px; margin-bottom: 20px; min-height: 60px; }
+  .done { color: #39ff14 !important; }
+  .err { color: #ff3d3d !important; }
+  button { background: #00e5ff; color: #0a0a0f; border: none; border-radius: 12px; padding: 14px 32px; font-size: 16px; font-weight: 700; cursor: pointer; width: 100%; margin-top: 12px; }
+  button:disabled { opacity: 0.5; }
+  .note { color: #555; font-size: 11px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>RepVault Updater</h1>
+  <div class="sub">Clears old cache. Your data is safe.</div>
+  <div id="status">Ready to update.</div>
+  <button id="btn" onclick="doUpdate()">Update Now</button>
+  <div class="note">This clears the service worker cache only.<br>Your workout data stays in localStorage.</div>
+</div>
+<script>
+async function doUpdate() {
+  const status = document.getElementById('status');
+  const btn = document.getElementById('btn');
+  btn.disabled = true;
+
+try {
+// Step 1: Unregister all service workers
+status.textContent = ‘Removing old service workers…’;
+if (‘serviceWorker’ in navigator) {
+const regs = await navigator.serviceWorker.getRegistrations();
+for (const reg of regs) {
+await reg.unregister();
+}
+status.textContent = `Removed ${regs.length} service worker(s)...`;
+}
+
+```
+// Step 2: Clear all caches
+status.textContent = 'Clearing cached files...';
+const keys = await caches.keys();
+for (const key of keys) {
+  await caches.delete(key);
+}
+status.textContent = `Cleared ${keys.length} cache(s)...`;
+
+// Step 3: Verify localStorage is intact
+let dataOK = false;
+try {
+  const d = localStorage.getItem('repvault_v2_master');
+  if (d) {
+    const parsed = JSON.parse(d);
+    const sessions = parsed.history?.length || 0;
+    const pbs = Object.keys(parsed.pbs || {}).length;
+    status.innerHTML = `Cache cleared! ✅<br>Data safe: ${sessions} sessions, ${pbs} PBs`;
+    dataOK = true;
+  } else {
+    status.innerHTML = 'Cache cleared! ✅<br>No existing data found (fresh install).';
+    dataOK = true;
+  }
+} catch(e) {
+  status.innerHTML = 'Cache cleared! ✅<br>Could not verify data.';
+}
+
+status.className = 'done';
+
+// Step 4: Redirect after delay
+btn.textContent = 'Redirecting in 3s...';
+setTimeout(() => {
+  window.location.href = 'index.html?v=14&t=' + Date.now();
+}, 3000);
+```
+
+} catch(err) {
+status.textContent = ’Error: ’ + err.message;
+status.className = ‘err’;
+btn.disabled = false;
+btn.textContent = ‘Try Again’;
+}
+}
+</script>
+
+</body>
+</html>
+
