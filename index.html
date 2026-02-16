@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -6,17 +7,20 @@
   <title>RepVault</title>
 
   <!-- PWA Meta -->
+
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#0a0a0f">
   <meta name="background-color" content="#0a0a0f">
 
   <!-- iOS PWA Meta -->
+
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="RepVault">
   <link rel="apple-touch-icon" href="icon-192.png">
 
   <!-- Fonts -->
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -38,12 +42,15 @@
     .fade-in { animation: fadeIn 0.3s ease-out; }
     .slide-up { animation: slideUp 0.4s ease-out; }
   </style>
+
 </head>
 <body>
   <div id="root"></div>
 
   <!-- React via CDN -->
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 
   <script>
@@ -164,12 +171,46 @@
     const CARDIO_LIST = ["run", "bike", "swim", "cycle", "jog", "sprint", "elliptical", "stair", "walk", "treadmill", "rowing machine", "hiit"];
 
     function detectMuscle(name) {
-      const l = name.toLowerCase();
+      const l = normaliseName(name);
       for (const rule of MUSCLE_RULES) { if (l.includes(rule.phrase)) return rule.group; }
       if (CARDIO_LIST.some(k => l.includes(k))) return "cardio";
       return "other";
     }
-    function isCardio(name) { const l = name.toLowerCase(); return CARDIO_LIST.some(k => l.includes(k)); }
+    function isCardio(name) { const l = normaliseName(name); return CARDIO_LIST.some(k => l.includes(k)); }
+
+    // --- Name normalisation: DB=Dumbbell, BB=Barbell, etc ---
+    const NAME_ALIASES = [
+      [/\bdb\b/gi, "dumbbell"], [/\bbb\b/gi, "barbell"], [/\bsm\b/gi, "smith machine"],
+      [/\boh\b/gi, "overhead"], [/\brdl\b/gi, "romanian deadlift"], [/\bsldl\b/gi, "stiff leg deadlift"],
+      [/\bincl\b/gi, "incline"], [/\bdecl\b/gi, "decline"],
+    ];
+    function normaliseName(name) {
+      let n = name.toLowerCase().trim();
+      NAME_ALIASES.forEach(([rx, rep]) => { n = n.replace(rx, rep); });
+      return n;
+    }
+    // Canonical key for PB lookups — ensures "DB shoulder press" matches "Dumbbell shoulder press"
+    function pbKey(name) { return normaliseName(name); }
+
+    // --- Week boundary: Monday 00:00 AEST (UTC+10) ---
+    function getMonday(date) {
+      const d = new Date(date);
+      // Adjust to AEST (UTC+10)
+      const aest = new Date(d.getTime() + (10 * 60 * 60 * 1000));
+      const day = aest.getUTCDay(); // 0=Sun, 1=Mon
+      const diff = day === 0 ? 6 : day - 1; // days since Monday
+      aest.setUTCDate(aest.getUTCDate() - diff);
+      aest.setUTCHours(0, 0, 0, 0);
+      // Convert back to UTC
+      return new Date(aest.getTime() - (10 * 60 * 60 * 1000));
+    }
+    function thisMonday() { return getMonday(new Date()); }
+    function thisMonthStart() {
+      const d = new Date();
+      const aest = new Date(d.getTime() + (10 * 60 * 60 * 1000));
+      return new Date(Date.UTC(aest.getUTCFullYear(), aest.getUTCMonth(), 1) - (10 * 60 * 60 * 1000));
+    }
+
     function deepClone(o) { try { return JSON.parse(JSON.stringify(o, (_, v) => typeof v === "number" && isNaN(v) ? null : v)); } catch { return {}; } }
     function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
     function fmtTime(s) { if (s < 0) s = 0; return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, "0")}`; }
@@ -184,8 +225,20 @@
     const phaseColor = { [PHASES.PREP]: C.amber, [PHASES.WORK]: C.cyan, [PHASES.REST_SET]: C.green, [PHASES.REST_EX]: C.purple, [PHASES.DONE]: C.green };
 
     // --- Storage ---
+    const SEED_PBS = {
+      "standing calf raise": { maxWeight: 136, maxReps: 10, maxVolume: 2460 },
+      "flat dumbbell bench press": { maxWeight: 70, maxReps: 9, maxVolume: 1890 },
+      "incline dumbbell bench press": { maxWeight: 60, maxReps: 10, maxVolume: 1860 },
+      "leg curl": { maxWeight: 45, maxReps: 10, maxVolume: 1620 },
+      "seated dumbbell shoulder press": { maxWeight: 44, maxReps: 10, maxVolume: 1500 },
+      "chest-supported row": { maxWeight: 40, maxReps: 10, maxVolume: 1600 },
+      "smith machine split squat": { maxWeight: 40, maxReps: 10, maxVolume: 1360 },
+      "split squat": { maxWeight: 40, maxReps: 10, maxVolume: 1040 },
+      "cable chest fly": { maxWeight: 27, maxReps: 10, maxVolume: 905 },
+      "incline fly": { maxWeight: 20, maxReps: 8, maxVolume: 334 },
+    };
     function loadDB() {
-      try { const d = localStorage.getItem(STORAGE_KEY); if (d) return JSON.parse(d); } catch {}
+      try { const d = localStorage.getItem(STORAGE_KEY); if (d) { const parsed = JSON.parse(d); if (!parsed._pbSeeded) { parsed.pbs = { ...SEED_PBS, ...(parsed.pbs || {}) }; parsed._pbSeeded = true; saveDB(parsed); } return parsed; } } catch {}
       // Legacy scan
       try {
         const keys = ["ironfocus_data", "ironfocus_history", "ironfocus_blueprints", "ironfocus_v2_master"];
@@ -195,7 +248,10 @@
         }
         if (merged.history.length > 0 || Object.keys(merged.blueprints).length > 0) return merged;
       } catch {}
-      return emptyDB();
+      const fresh = emptyDB();
+      fresh.pbs = { ...SEED_PBS };
+      fresh._pbSeeded = true;
+      return fresh;
     }
     function saveDB(db) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(deepClone(db))); } catch (e) { console.error("Save failed:", e); } }
     function emptyDB() { return { history: [], blueprints: {}, pbs: {}, settings: { timers: { ...DEFAULT_TIMERS }, audioEnabled: true } }; }
@@ -293,27 +349,32 @@
       const { db, setScreen, setWo, notify } = useContext(AppCtx);
       const [quickText, setQuickText] = useState("");
       const [showQuick, setShowQuick] = useState(false);
+      const [viewMode, setViewMode] = useState("week"); // "week" or "month"
 
       const todayIdx = new Date().getDay();
       const todayName = DAYS[todayIdx === 0 ? 6 : todayIdx - 1];
       const todayBP = db.blueprints?.[todayName];
 
-      const weekHistory = db.history.filter(x => (Date.now() - new Date(x.date).getTime()) / 864e5 <= 7);
-      const totalVol = weekHistory.reduce((s, x) => s + (x.exercises || []).reduce((es, ex) => es + (ex.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0), 0);
+      const mondayStart = thisMonday();
+      const monthStart = thisMonthStart();
+      const cutoff = viewMode === "week" ? mondayStart : monthStart;
 
-      // Weekly sets per muscle group
-      const weekMuscleSets = useMemo(() => {
+      const filteredHistory = db.history.filter(x => new Date(x.date) >= cutoff);
+      const totalVol = filteredHistory.reduce((s, x) => s + (x.exercises || []).reduce((es, ex) => es + (ex.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0), 0);
+
+      // Sets per muscle group for selected period
+      const muscleSets = useMemo(() => {
         const counts = {};
-        weekHistory.forEach(session => {
+        filteredHistory.forEach(session => {
           (session.exercises || []).forEach(ex => {
             const muscle = ex.muscle || detectMuscle(ex.name);
             if (muscle && muscle !== "other" && muscle !== "cardio") {
-              counts[muscle] = (counts[muscle] || 0) + (ex.sets || []).length;
+              counts[muscle] = (counts[muscle] || 0) + (ex.sets || []).filter(s => s.completed !== false).length;
             }
           });
         });
         return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-      }, [weekHistory]);
+      }, [filteredHistory]);
 
       function makeExercises(names) {
         return names.map(name => ({
@@ -333,25 +394,30 @@
           h("h1", { style: { fontSize: 36, fontWeight: 900, letterSpacing: -1, background: `linear-gradient(135deg, ${C.cyan}, ${C.green})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" } }, "REPVAULT"),
           h("p", { style: { color: C.textDim, fontSize: 13, marginTop: 4, fontWeight: 300 } }, "Your Training. Locked In."),
         ),
-        // Weekly summary
+        // Week / Month toggle
+        h("div", { style: { display: "flex", gap: 4, marginBottom: 12, background: C.surface, borderRadius: 10, padding: 3 } },
+          h("button", { onClick: () => setViewMode("week"), style: { flex: 1, padding: "8px 0", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", background: viewMode === "week" ? C.cyan : "transparent", color: viewMode === "week" ? C.bg : C.textDim } }, "This Week"),
+          h("button", { onClick: () => setViewMode("month"), style: { flex: 1, padding: "8px 0", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", background: viewMode === "month" ? C.cyan : "transparent", color: viewMode === "month" ? C.bg : C.textDim } }, "This Month"),
+        ),
+        // Summary
         h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 16 } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "This Week"),
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, viewMode === "week" ? "This Week (Mon–Sun)" : "Month to Date"),
           h("div", { style: { display: "flex", gap: 16 } },
-            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, weekHistory.length), h("div", { style: { fontSize: 11, color: C.textDim } }, "Sessions")),
+            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, filteredHistory.length), h("div", { style: { fontSize: 11, color: C.textDim } }, "Sessions")),
             h("div", { style: { width: 1, background: C.border } }),
-            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, totalVol > 1000 ? `${(totalVol / 1000).toFixed(1)}k` : totalVol), h("div", { style: { fontSize: 11, color: C.textDim } }, "Volume (kg)")),
+            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, muscleSets.reduce((s, [, c]) => s + c, 0)), h("div", { style: { fontSize: 11, color: C.textDim } }, "Working Sets")),
             h("div", { style: { width: 1, background: C.border } }),
             h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.amber, fontFamily: "'JetBrains Mono'" } }, Object.keys(db.pbs || {}).length), h("div", { style: { fontSize: 11, color: C.textDim } }, "PBs")),
           ),
         ),
-        // Weekly muscle group breakdown
-        weekMuscleSets.length > 0 && h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 16 } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "Weekly Sets by Muscle"),
+        // Muscle group breakdown
+        muscleSets.length > 0 && h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 16 } },
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, `${viewMode === "week" ? "Weekly" : "Monthly"} Sets by Muscle`),
           h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
-            weekMuscleSets.map(([muscle, count]) => {
-              const maxSets = weekMuscleSets[0]?.[1] || 1;
+            muscleSets.map(([muscle, count]) => {
+              const maxSets = muscleSets[0]?.[1] || 1;
               const intensity = Math.max(0.3, count / maxSets);
-              const muscleColors = { chest: C.cyan, back: C.green, shoulders: C.amber, legs: C.purple, biceps: C.cyan, triceps: C.green, core: C.amber };
+              const muscleColors = { chest: C.cyan, back: C.green, shoulders: C.amber, glutes: C.purple, quads: C.cyan, hamstrings: C.green, calves: C.amber, biceps: C.cyan, triceps: C.green, core: C.amber };
               const mc = muscleColors[muscle] || C.cyan;
               return h("div", { key: muscle, style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: `${mc}${Math.round(intensity * 20).toString(16).padStart(2, "0")}`, border: `1px solid ${mc}30`, borderRadius: 10, minWidth: "calc(50% - 3px)" } },
                 h("div", { style: { flex: 1 } },
@@ -407,14 +473,14 @@
       const statsEx = (phase === PHASES.REST_EX && wo) ? wo.exercises[wo.currentExIdx + 1] : curEx;
 
       // PB data
-      const curPB = statsEx ? db.pbs?.[statsEx.name.toLowerCase()] : null;
+      const curPB = statsEx ? db.pbs?.[pbKey(statsEx.name)] : null;
 
       // Find the session where the PB weight was set
       const pbSession = useMemo(() => {
         if (!statsEx || !curPB) return null;
-        const nm = statsEx.name.toLowerCase();
+        const nm = pbKey(statsEx.name);
         for (let i = db.history.length - 1; i >= 0; i--) {
-          const ex = db.history[i].exercises?.find(e => e.name.toLowerCase() === nm);
+          const ex = db.history[i].exercises?.find(e => pbKey(e.name) === nm);
           if (ex && ex.sets?.some(s => s.weight === curPB.maxWeight)) return { date: db.history[i].date };
         }
         return null;
@@ -423,9 +489,9 @@
       // Last performance — most recent session with this exercise
       const lastPerf = useMemo(() => {
         if (!statsEx) return null;
-        const nm = statsEx.name.toLowerCase();
+        const nm = pbKey(statsEx.name);
         for (let i = db.history.length - 1; i >= 0; i--) {
-          const ex = db.history[i].exercises?.find(e => e.name.toLowerCase() === nm);
+          const ex = db.history[i].exercises?.find(e => pbKey(e.name) === nm);
           if (ex) {
             const sets = ex.sets || [];
             const maxW = Math.max(0, ...sets.map(s => s.weight || 0));
@@ -440,14 +506,13 @@
         return null;
       }, [statsEx?.name, db.history]);
 
-      // Auto-populate weights from last session when exercise changes
+      // Auto-populate weights (not reps) from last session when exercise changes
       const prevExIdxRef = useRef(null);
       useEffect(() => {
         if (!wo || !curEx || curEx.isCardio) return;
         if (prevExIdxRef.current === wo.currentExIdx) return;
         prevExIdxRef.current = wo.currentExIdx;
         if (lastPerf && lastPerf.sets.length > 0) {
-          // Only auto-fill if sets have no weight yet (fresh exercise)
           const allEmpty = curEx.sets.every(s => !s.weight || s.weight === 0);
           if (allEmpty) {
             setWo(prev => {
@@ -457,7 +522,7 @@
                 const historySet = lastPerf.sets[i] || lastPerf.sets[lastPerf.sets.length - 1];
                 if (historySet) {
                   s.weight = historySet.weight || 0;
-                  s.reps = historySet.reps || 0;
+                  // Don't pre-populate reps — user enters fresh each set
                 }
               });
               return next;
@@ -597,7 +662,7 @@
       function finish() {
         const session = { id: wo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - wo.startTime) / 1000), exercises: wo.exercises.map(e => ({ name: e.name, muscle: e.muscle, isCardio: e.isCardio, sets: e.sets.map(s => ({ weight: s.weight || 0, reps: s.reps || 0, duration: s.duration || 0, completed: s.completed })) })) };
         const newPBs = { ...(db.pbs || {}) };
-        session.exercises.forEach(ex => { const k = ex.name.toLowerCase(); const b = newPBs[k] || { maxWeight: 0, maxVolume: 0, maxReps: 0 }; ex.sets.forEach(s => { if (s.weight > b.maxWeight) b.maxWeight = s.weight; if (s.reps > b.maxReps) b.maxReps = s.reps; }); const v = ex.sets.reduce((s, st) => s + st.weight * st.reps, 0); if (v > b.maxVolume) b.maxVolume = v; newPBs[k] = b; });
+        session.exercises.forEach(ex => { const k = pbKey(ex.name); const b = newPBs[k] || { maxWeight: 0, maxVolume: 0, maxReps: 0 }; ex.sets.forEach(s => { if (s.weight > b.maxWeight) b.maxWeight = s.weight; if (s.reps > b.maxReps) b.maxReps = s.reps; }); const v = ex.sets.reduce((s, st) => s + st.weight * st.reps, 0); if (v > b.maxVolume) b.maxVolume = v; newPBs[k] = b; });
         persist(prev => ({ ...prev, history: [...prev.history, session], pbs: newPBs }));
         notify("Workout saved! 💪", "success"); setWo(null); setPhase(PHASES.PREP); setScreen("home");
       }
@@ -1013,22 +1078,30 @@
       const [editingPB, setEditingPB] = useState(null);
       const [pbWeight, setPbWeight] = useState(0);
       const [pbReps, setPbReps] = useState(0);
-      const [pbVol, setPbVol] = useState(0);
 
+      // Weekly sessions data for chart — using Monday-AEST boundaries
       const weeklyData = useMemo(() => {
         const weeks = {};
-        db.history.forEach(x => { const d = new Date(x.date); const ws = new Date(d); ws.setDate(d.getDate() - d.getDay() + 1); const k = ws.toISOString().split("T")[0]; if (!weeks[k]) weeks[k] = { sessions: 0, volume: 0 }; weeks[k].sessions++; (x.exercises || []).forEach(ex => { weeks[k].volume += (ex.sets || []).reduce((s, st) => s + (st.weight || 0) * (st.reps || 0), 0); }); });
+        db.history.forEach(x => {
+          const mon = getMonday(new Date(x.date));
+          const k = mon.toISOString().split("T")[0];
+          if (!weeks[k]) weeks[k] = { sessions: 0, sets: 0 };
+          weeks[k].sessions++;
+          (x.exercises || []).forEach(ex => { weeks[k].sets += (ex.sets || []).filter(s => s.completed !== false).length; });
+        });
         return Object.entries(weeks).sort((a, b) => a[0].localeCompare(b[0])).slice(-8);
       }, [db.history]);
 
-      const curVol = weeklyData.length > 0 ? weeklyData[weeklyData.length - 1][1].volume : 0;
-      const lastVol = weeklyData.length > 1 ? weeklyData[weeklyData.length - 2][1].volume : 0;
-      const change = lastVol > 0 ? ((curVol - lastVol) / lastVol * 100).toFixed(1) : 0;
+      const curSets = weeklyData.length > 0 ? weeklyData[weeklyData.length - 1][1].sets : 0;
+      const lastSets = weeklyData.length > 1 ? weeklyData[weeklyData.length - 2][1].sets : 0;
+      const change = lastSets > 0 ? ((curSets - lastSets) / lastSets * 100).toFixed(0) : 0;
+      const curSessions = weeklyData.length > 0 ? weeklyData[weeklyData.length - 1][1].sessions : 0;
+
       const pbs = Object.entries(db.pbs || {}).sort((a, b) => b[1].maxWeight - a[1].maxWeight);
 
-      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.maxReps); setPbVol(pb.maxVolume); }
+      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.maxReps); }
       function savePB() {
-        persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { maxWeight: pbWeight, maxReps: pbReps, maxVolume: pbVol } } }));
+        persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { ...prev.pbs[editingPB], maxWeight: pbWeight, maxReps: pbReps } } }));
         setEditingPB(null); notify("PB updated", "success");
       }
       function deletePB(name) {
@@ -1038,24 +1111,24 @@
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
         h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "Analytics"),
-        // Volume trend
+        // Weekly summary
         h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "Volume Trend"),
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "This Week"),
           h("div", { style: { display: "flex", gap: 16, alignItems: "flex-end" } },
-            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "This Week"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, curVol > 1000 ? `${(curVol / 1000).toFixed(1)}k` : curVol)),
-            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "Last Week"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, lastVol > 1000 ? `${(lastVol / 1000).toFixed(1)}k` : lastVol)),
-            h("div", { style: { padding: "6px 14px", borderRadius: 20, fontSize: 14, fontWeight: 700, background: change >= 0 ? C.greenDim : C.redDim, color: change >= 0 ? C.green : C.red } }, `${change >= 0 ? "↑" : "↓"} ${Math.abs(change)}%`),
+            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "Working Sets"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, curSets)),
+            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 4 } }, "Sessions"), h("div", { style: { fontSize: 28, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, curSessions)),
+            lastSets > 0 && h("div", { style: { padding: "6px 14px", borderRadius: 20, fontSize: 14, fontWeight: 700, background: change >= 0 ? C.greenDim : C.redDim, color: change >= 0 ? C.green : C.red } }, `${change >= 0 ? "↑" : "↓"} ${Math.abs(change)}%`),
           ),
         ),
-        // Chart
+        // Chart — weekly sets
         weeklyData.length > 0 && h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 } }, "Weekly Volume"),
+          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 } }, "Weekly Sets"),
           h("div", { style: { display: "flex", gap: 4, alignItems: "flex-end", height: 120 } },
             weeklyData.map(([w, d], i) => {
-              const max = Math.max(...weeklyData.map(x => x[1].volume), 1);
-              const ht = (d.volume / max) * 100;
+              const max = Math.max(...weeklyData.map(x => x[1].sets), 1);
+              const ht = (d.sets / max) * 100;
               return h("div", { key: w, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 } },
-                h("div", { style: { fontSize: 9, color: C.textDim } }, d.volume > 1000 ? `${(d.volume / 1000).toFixed(0)}k` : d.volume),
+                h("div", { style: { fontSize: 9, color: C.textDim } }, d.sets),
                 h("div", { style: { width: "100%", height: `${ht}%`, minHeight: 4, background: i === weeklyData.length - 1 ? C.cyan : C.border, borderRadius: 4 } }),
                 h("div", { style: { fontSize: 9, color: C.textDim } }, new Date(w).toLocaleDateString("en-AU", { day: "numeric", month: "short" })),
               );
@@ -1075,27 +1148,22 @@
                     h("input", { type: "number", inputMode: "decimal", value: pbWeight || "", onChange: e => setPbWeight(parseFloat(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.cyan, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
                   ),
                   h("div", { style: { flex: 1 } },
-                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Reps"),
+                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Max Reps"),
                     h("input", { type: "number", inputMode: "numeric", value: pbReps || "", onChange: e => setPbReps(parseInt(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.green, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
-                  ),
-                  h("div", { style: { flex: 1 } },
-                    h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 4 } }, "Volume"),
-                    h("input", { type: "number", inputMode: "numeric", value: pbVol || "", onChange: e => setPbVol(parseInt(e.target.value) || 0), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.amber, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
                   ),
                 ),
                 h("div", { style: { display: "flex", gap: 8 } },
                   h("button", { onClick: savePB, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 12 } }, "Save"),
+                  h("button", { onClick: () => deletePB(name), style: { flex: 1, background: C.red, color: "#fff", border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 12 } }, "Delete"),
                   h("button", { onClick: () => setEditingPB(null), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontWeight: 600, cursor: "pointer", fontSize: 12 } }, "Cancel"),
                 ),
               )
-            : h("div", { key: name, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.bg, borderRadius: 8, marginBottom: 4 } },
+            : h("div", { key: name, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: C.bg, borderRadius: 8, marginBottom: 4, cursor: "pointer" }, onClick: () => startEditPB(name, pb) },
                 h("span", { style: { fontSize: 13, fontWeight: 500, textTransform: "capitalize", flex: 1 } }, name),
-                h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
-                  h("span", { style: { fontSize: 12, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, `${pb.maxWeight}kg`),
-                  h("span", { style: { fontSize: 12, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.maxReps}r`),
-                  h("span", { style: { fontSize: 12, color: C.amber, fontFamily: "'JetBrains Mono'" } }, `${pb.maxVolume}v`),
-                  h("button", { onClick: () => startEditPB(name, pb), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 8px", color: C.textDim, fontSize: 10, cursor: "pointer" } }, "✏️"),
-                  h("button", { onClick: () => deletePB(name), style: { background: "none", border: `1px solid ${C.red}30`, borderRadius: 6, padding: "3px 8px", color: C.red, fontSize: 10, cursor: "pointer" } }, "✕"),
+                h("div", { style: { display: "flex", gap: 12, alignItems: "center" } },
+                  h("span", { style: { fontSize: 13, color: C.cyan, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${pb.maxWeight}kg`),
+                  h("span", { style: { fontSize: 13, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.maxReps}r`),
+                  h("span", { style: { fontSize: 11, color: C.textDim, marginLeft: 4 } }, "✏️"),
                 ),
               ),
           ),
@@ -1111,6 +1179,19 @@
       const t = db.settings?.timers || DEFAULT_TIMERS;
       function upd(k, v) { persist(prev => ({ ...prev, settings: { ...prev.settings, timers: { ...(prev.settings?.timers || DEFAULT_TIMERS), [k]: parseInt(v) || 0 } } })); }
       function clearAll() { if (confirm("This will erase ALL data. Are you sure?")) { persist(emptyDB()); notify("All data cleared", "warn"); } }
+      function forceUpdate() {
+        if ("serviceWorker" in navigator) {
+          navigator.serviceWorker.getRegistrations().then(regs => {
+            regs.forEach(r => r.unregister());
+          });
+          caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))).then(() => {
+            notify("Cache cleared! Reloading...", "success");
+            setTimeout(() => window.location.reload(true), 500);
+          });
+        } else {
+          window.location.reload(true);
+        }
+      }
       const fields = [{ key: "prep", label: "Prep Timer", color: C.amber }, { key: "work", label: "Work Timer", color: C.cyan }, { key: "restSet", label: "Rest (Set)", color: C.green }, { key: "restEx", label: "Rest (Exercise)", color: C.purple }];
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
@@ -1122,7 +1203,11 @@
             h("input", { type: "number", value: t[f.key], onChange: e => upd(f.key, e.target.value), style: { width: 80, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.text, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
           )),
         ),
+        // Force update button
+        h("button", { onClick: forceUpdate, style: { width: "100%", background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "🔄 Force Update App"),
+        h("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", marginBottom: 12 } }, "Clears cache and reloads. Your data is safe."),
         h("button", { onClick: clearAll, style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v14"),
       );
     }
 
@@ -1165,12 +1250,29 @@
     // --- Mount ---
     ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
 
-    // --- Register Service Worker ---
+    // --- Service Worker: nuke old, register new ---
     if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("sw.js").catch(err => console.log("SW registration failed:", err));
+      window.addEventListener("load", async () => {
+        try {
+          // First: unregister any existing SWs (kills the old cache-first one)
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const r of regs) {
+            await r.unregister();
+          }
+          // Clear old caches
+          const keys = await caches.keys();
+          for (const k of keys) {
+            if (k.startsWith("repvault-")) await caches.delete(k);
+          }
+          // Now register fresh
+          const reg = await navigator.serviceWorker.register("sw.js");
+          reg.update();
+        } catch(e) {
+          console.log("SW setup:", e);
+        }
       });
     }
   </script>
+
 </body>
 </html>
