@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -7,20 +6,17 @@
   <title>RepVault</title>
 
   <!-- PWA Meta -->
-
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#0a0a0f">
   <meta name="background-color" content="#0a0a0f">
 
   <!-- iOS PWA Meta -->
-
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="RepVault">
   <link rel="apple-touch-icon" href="icon-192.png">
 
   <!-- Fonts -->
-
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -42,15 +38,12 @@
     .fade-in { animation: fadeIn 0.3s ease-out; }
     .slide-up { animation: slideUp 0.4s ease-out; }
   </style>
-
 </head>
 <body>
   <div id="root"></div>
 
   <!-- React via CDN -->
-
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 
   <script>
@@ -237,8 +230,45 @@
       "cable chest fly": { maxWeight: 27, maxReps: 10, maxVolume: 905 },
       "incline fly": { maxWeight: 20, maxReps: 8, maxVolume: 334 },
     };
+    function mkBPEx(name) { return { name, muscle: detectMuscle(name), isCardio: isCardio(name) }; }
+    const SEED_BLUEPRINTS = {
+      Monday: { name: "Workout A – Upper Emphasis", exercises: [
+        "Pallof Press", "Dead Bug", "Flat Dumbbell Bench Press", "Chest-Supported Row",
+        "Seated Dumbbell Shoulder Press", "Wide-Grip Lat Pulldown", "Incline Dumbbell Bench Press",
+        "Cable Chest Fly", "Hip Thrust", "Leg Extension",
+        "Smith Machine Split Squat", "Leg Curl", "Standing Calf Raise"
+      ].map(mkBPEx) },
+      Tuesday: { name: "Workout B – Lower Emphasis", exercises: [
+        "McGill Curl-Up", "Leg Press", "Glute Kickback (Cable)", "Leg Curl (Seated)",
+        "Smith Machine Split Squat (Long Stride)", "Seated Calf Raise",
+        "Machine Chest Press", "Pec Deck", "Neutral-Grip Lat Pulldown",
+        "Cable Lateral Raise", "Rear-Delt Cable Fly", "EZ-Bar Curl", "Rope Triceps Pushdown"
+      ].map(mkBPEx) },
+      Thursday: { name: "Workout C – Upper Emphasis", exercises: [
+        "Hanging Knee Raise", "Plank Hold", "Incline Dumbbell Fly", "Seated Cable Row",
+        "Dumbbell Shoulder Press", "One-Arm Dumbbell Row", "Close-Grip Bench Press",
+        "Straight-Arm Pulldown", "Leg Extension", "Hip Thrust (Single-Leg)",
+        "Leg Curl", "Smith Machine Split Squat (Short Stride)", "Standing Calf Raise", "Face Pulls"
+      ].map(mkBPEx) },
+      Friday: { name: "Workout D – Lower Emphasis", exercises: [
+        "Russian Twist", "Hip Thrust", "Leg Extension (Tempo)",
+        "Glute Kickback (Cable)", "Leg Curl (Single-Leg)", "Seated Calf Raise",
+        "Machine Chest Press", "Chest-Supported T-Bar Row", "Cable Lateral Raise",
+        "Reverse Pec Deck", "Skull Crushers", "Incline Dumbbell Curl", "Barbell Curl"
+      ].map(mkBPEx) },
+    };
     function loadDB() {
-      try { const d = localStorage.getItem(STORAGE_KEY); if (d) { const parsed = JSON.parse(d); if (!parsed._pbSeeded) { parsed.pbs = { ...SEED_PBS, ...(parsed.pbs || {}) }; parsed._pbSeeded = true; saveDB(parsed); } return parsed; } } catch {}
+      try {
+        const d = localStorage.getItem(STORAGE_KEY);
+        if (d) {
+          const parsed = JSON.parse(d);
+          let changed = false;
+          if (!parsed._pbSeeded) { parsed.pbs = { ...SEED_PBS, ...(parsed.pbs || {}) }; parsed._pbSeeded = true; changed = true; }
+          if (!parsed._bpSeeded) { parsed.blueprints = { ...SEED_BLUEPRINTS, ...(parsed.blueprints || {}) }; parsed._bpSeeded = true; changed = true; }
+          if (changed) saveDB(parsed);
+          return parsed;
+        }
+      } catch {}
       // Legacy scan
       try {
         const keys = ["ironfocus_data", "ironfocus_history", "ironfocus_blueprints", "ironfocus_v2_master"];
@@ -250,7 +280,9 @@
       } catch {}
       const fresh = emptyDB();
       fresh.pbs = { ...SEED_PBS };
+      fresh.blueprints = { ...SEED_BLUEPRINTS };
       fresh._pbSeeded = true;
+      fresh._bpSeeded = true;
       return fresh;
     }
     function saveDB(db) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(deepClone(db))); } catch (e) { console.error("Save failed:", e); } }
@@ -551,6 +583,19 @@
         });
       }
 
+      function copyWeightDown(ei, fromSetIdx) {
+        setWo(prev => {
+          const next = deepClone(prev);
+          const w = next.exercises[ei].sets[fromSetIdx]?.weight;
+          if (!w) return prev;
+          for (let i = fromSetIdx + 1; i < next.exercises[ei].sets.length; i++) {
+            next.exercises[ei].sets[i].weight = w;
+          }
+          return next;
+        });
+        notify("Weight copied to remaining sets", "success");
+      }
+
       useEffect(() => { audio.init(); audio.startHeartbeat(); return () => audio.stopHeartbeat(); }, []);
 
       // Wall-clock based timer — stores the absolute end time so we can catch up after lock/resume
@@ -645,17 +690,54 @@
         else if (phase === PHASES.REST_EX) { const ni = wo.currentExIdx + 1; setWo(prev => ({ ...prev, currentExIdx: ni, currentSetIdx: 0 })); setPhase(PHASES.PREP); setPhaseTimer(timers.prep); const ne = wo.exercises[ni]; if (ne) audio.speak(`Next: ${ne.name}`); }
       }
 
-      function skip() { clearInterval(timerRef.current); advancePhase(); }
+      function skip() { clearInterval(timerRef.current); pausedAtRef.current = null; remainingAtPause.current = 0; setPaused(false); advancePhase(); }
 
       function goBack() {
-        const now = Date.now();
-        if (timer > 3 || now - backRef.current > 2000) {
-          backRef.current = now;
-          if (phase === PHASES.WORK) setPhaseTimer(timers.work); else if (phase === PHASES.REST_SET) setPhaseTimer(timers.restSet);
-          else if (phase === PHASES.REST_EX) setPhaseTimer(timers.restEx); else if (phase === PHASES.PREP) setPhaseTimer(timers.prep);
-        } else {
-          if (wo.currentSetIdx > 0) { setWo(prev => ({ ...prev, currentSetIdx: prev.currentSetIdx - 1 })); setPhase(PHASES.WORK); setPhaseTimer(timers.work); }
-          else if (wo.currentExIdx > 0) { const pi = wo.currentExIdx - 1; setWo(prev => ({ ...prev, currentExIdx: pi, currentSetIdx: prev.exercises[pi].sets.length - 1 })); setPhase(PHASES.WORK); setPhaseTimer(timers.work); }
+        if (!wo) return;
+        // Navigate backwards through the phase sequence
+        if (phase === PHASES.REST_SET) {
+          // Go back to WORK for current set (re-do this set)
+          setPhase(PHASES.WORK); setPhaseTimer(timers.work);
+          // Un-complete the current set since we're going back to it
+          setWo(prev => {
+            const next = deepClone(prev);
+            if (next.exercises[next.currentExIdx]?.sets[next.currentSetIdx]) next.exercises[next.currentExIdx].sets[next.currentSetIdx].completed = false;
+            return next;
+          });
+        } else if (phase === PHASES.REST_EX) {
+          // Go back to WORK for the last set of current exercise
+          const ex = wo.exercises[wo.currentExIdx];
+          const lastSetIdx = ex.sets.length - 1;
+          setWo(prev => {
+            const next = deepClone(prev);
+            next.currentSetIdx = lastSetIdx;
+            if (next.exercises[next.currentExIdx]?.sets[lastSetIdx]) next.exercises[next.currentExIdx].sets[lastSetIdx].completed = false;
+            return next;
+          });
+          setPhase(PHASES.WORK); setPhaseTimer(timers.work);
+        } else if (phase === PHASES.WORK) {
+          // Go back to REST before this set, or to previous exercise
+          if (wo.currentSetIdx > 0) {
+            // Go to REST_SET before this set, and move set index back
+            setWo(prev => ({ ...prev, currentSetIdx: prev.currentSetIdx - 1 }));
+            setPhase(PHASES.REST_SET); setPhaseTimer(timers.restSet);
+          } else if (wo.currentExIdx > 0) {
+            // Go to REST_EX before this exercise, and move exercise index back
+            const pi = wo.currentExIdx - 1;
+            setWo(prev => ({ ...prev, currentExIdx: pi, currentSetIdx: prev.exercises[pi].sets.length - 1 }));
+            setPhase(PHASES.REST_EX); setPhaseTimer(timers.restEx);
+          } else {
+            // Very first set of first exercise — go to PREP
+            setPhase(PHASES.PREP); setPhaseTimer(timers.prep);
+          }
+        } else if (phase === PHASES.PREP) {
+          // Go back to previous exercise's last rest/work if possible
+          if (wo.currentExIdx > 0) {
+            const pi = wo.currentExIdx - 1;
+            setWo(prev => ({ ...prev, currentExIdx: pi, currentSetIdx: prev.exercises[pi].sets.length - 1 }));
+            setPhase(PHASES.WORK); setPhaseTimer(timers.work);
+          }
+          // else: already at the very start, do nothing
         }
       }
 
@@ -839,6 +921,7 @@
                     h("input", { type: "number", inputMode: "decimal", value: s.weight || "", onChange: e => updateSet(wo.currentExIdx, si, "weight", parseFloat(e.target.value) || 0), onBlur: si === 0 ? () => spreadWeight(wo.currentExIdx) : undefined, placeholder: "KG", style: { width: "100%", background: C.bg, border: `1px solid ${C.cyanDim}`, borderRadius: 8, padding: "10px 8px", color: C.cyan, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
                     h("input", { type: "number", inputMode: "numeric", value: s.reps || "", onChange: e => updateSet(wo.currentExIdx, si, "reps", parseInt(e.target.value) || 0), placeholder: "Reps", style: { width: "100%", background: C.bg, border: `1px solid ${C.greenDim}`, borderRadius: 8, padding: "10px 8px", color: C.green, fontSize: 16, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
                   ),
+                  si < curEx.sets.length - 1 && s.weight ? h("button", { onClick: () => copyWeightDown(wo.currentExIdx, si), title: "Copy weight to remaining sets", style: { background: `${C.cyan}15`, border: `1px solid ${C.cyan}30`, borderRadius: 6, padding: "4px 6px", color: C.cyan, fontSize: 10, fontWeight: 700, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } }, "Copy ↓") : null,
                 )),
               ),
             ),
@@ -1013,27 +1096,94 @@
       const { db, persist, notify } = useContext(AppCtx);
       const [expanded, setExpanded] = useState(null);
       const [editId, setEditId] = useState(null);
-      const [addMuscle, setAddMuscle] = useState("");
-      const [addSets, setAddSets] = useState(4);
+      const [editData, setEditData] = useState(null);
+      const [confirmDelete, setConfirmDelete] = useState(null);
 
       const sorted = [...db.history].sort((a, b) => new Date(b.date) - new Date(a.date));
 
-      function addToSession(sid) {
-        if (!addMuscle) return;
-        persist(prev => ({ ...prev, history: prev.history.map(x => x.id !== sid ? x : { ...x, exercises: [...(x.exercises || []), { name: `${addMuscle} (manual)`, muscle: addMuscle, isCardio: false, sets: Array.from({ length: addSets }, () => ({ weight: 0, reps: 0, completed: true })) }] }) }));
-        setEditId(null); setAddMuscle(""); notify("Sets added", "success");
+      function startCorrection(session) {
+        setEditId(session.id);
+        setEditData(deepClone(session));
       }
-      function removeEx(sid, ei) { persist(prev => ({ ...prev, history: prev.history.map(x => x.id !== sid ? x : { ...x, exercises: x.exercises.filter((_, i) => i !== ei) }) })); notify("Exercise removed", "info"); }
+
+      function updateEditEx(ei, field, val) {
+        setEditData(prev => {
+          const next = deepClone(prev);
+          next.exercises[ei][field] = val;
+          if (field === "name") {
+            next.exercises[ei].muscle = detectMuscle(val);
+            next.exercises[ei].isCardio = isCardio(val);
+          }
+          return next;
+        });
+      }
+
+      function updateEditSet(ei, si, field, val) {
+        setEditData(prev => {
+          const next = deepClone(prev);
+          next.exercises[ei].sets[si][field] = val;
+          return next;
+        });
+      }
+
+      function addSetToEx(ei) {
+        setEditData(prev => {
+          const next = deepClone(prev);
+          next.exercises[ei].sets.push({ weight: 0, reps: 0, completed: true });
+          return next;
+        });
+      }
+
+      function removeSetFromEx(ei, si) {
+        setEditData(prev => {
+          const next = deepClone(prev);
+          if (next.exercises[ei].sets.length <= 1) return prev;
+          next.exercises[ei].sets.splice(si, 1);
+          return next;
+        });
+      }
+
+      function removeExFromEdit(ei) {
+        setEditData(prev => {
+          const next = deepClone(prev);
+          next.exercises.splice(ei, 1);
+          return next;
+        });
+      }
+
+      function addExToEdit() {
+        setEditData(prev => {
+          const next = deepClone(prev);
+          next.exercises.push({ name: "New Exercise", muscle: "other", isCardio: false, sets: [{ weight: 0, reps: 0, completed: true }, { weight: 0, reps: 0, completed: true }, { weight: 0, reps: 0, completed: true }, { weight: 0, reps: 0, completed: true }] });
+          return next;
+        });
+      }
+
+      function saveCorrection() {
+        if (!editData) return;
+        persist(prev => ({ ...prev, history: prev.history.map(x => x.id === editData.id ? editData : x) }));
+        setEditId(null); setEditData(null); notify("Workout updated", "success");
+      }
+
+      function cancelCorrection() { setEditId(null); setEditData(null); }
+
+      function deleteWorkout(sid) {
+        persist(prev => ({ ...prev, history: prev.history.filter(x => x.id !== sid) }));
+        setExpanded(null); setEditId(null); setEditData(null); setConfirmDelete(null);
+        notify("Workout deleted", "warn");
+      }
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
         h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "History"),
         sorted.length === 0 && h("div", { style: { textAlign: "center", color: C.textDim, padding: 40 } }, "No workouts yet. Get after it!"),
         sorted.map(x => {
           const isExp = expanded === x.id;
-          const vol = (x.exercises || []).reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0);
-          const muscles = [...new Set((x.exercises || []).map(e => e.muscle))].filter(Boolean);
-          return h("div", { key: x.id, style: { background: C.surface, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 8 } },
-            h("button", { onClick: () => setExpanded(isExp ? null : x.id), style: { width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+          const isEditing = editId === x.id && editData;
+          const displayData = isEditing ? editData : x;
+          const vol = (displayData.exercises || []).reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0);
+          const muscles = [...new Set((displayData.exercises || []).map(e => e.muscle))].filter(Boolean);
+          return h("div", { key: x.id, style: { background: C.surface, borderRadius: 14, border: `1px solid ${isEditing ? C.amber + "60" : C.border}`, overflow: "hidden", marginBottom: 8 } },
+            h("button", { onClick: () => { if (!isEditing) setExpanded(isExp ? null : x.id); }, style: { width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center" } },
               h("div", null,
                 h("div", { style: { fontSize: 14, fontWeight: 600 } }, new Date(x.date).toLocaleDateString("en-AU", { weekday: "short", month: "short", day: "numeric" })),
                 h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `${muscles.join(", ")} • ${fmtDur(x.duration || 0)}`),
@@ -1043,27 +1193,65 @@
                 h("div", { style: { fontSize: 10, color: C.textDim } }, "kg vol"),
               ),
             ),
-            isExp && h("div", { className: "slide-up", style: { padding: "0 16px 16px", borderTop: `1px solid ${C.border}` } },
+            // Expanded view (read-only)
+            isExp && !isEditing && h("div", { className: "slide-up", style: { padding: "0 16px 16px", borderTop: `1px solid ${C.border}` } },
               (x.exercises || []).map((ex, ei) => h("div", { key: ei, style: { marginTop: 10 } },
                 h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
                   h("span", { style: { fontSize: 13, fontWeight: 600 } }, ex.name),
-                  h("button", { onClick: () => removeEx(x.id, ei), style: { background: "none", border: "none", color: C.red, fontSize: 11, cursor: "pointer", padding: "4px 8px" } }, "Remove"),
+                  h("span", { style: { fontSize: 11, color: C.textDim, padding: "2px 8px", background: C.bg, borderRadius: 6 } }, ex.muscle),
                 ),
                 h("div", { style: { display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 } },
                   (ex.sets || []).map((s, si) => h("span", { key: si, style: { fontSize: 11, color: C.textDim, padding: "2px 8px", background: C.bg, borderRadius: 6 } }, `${s.weight}kg × ${s.reps}`)),
                 ),
               )),
-              editId === x.id ? h("div", { style: { marginTop: 12, padding: 12, background: C.bg, borderRadius: 10 } },
-                h("div", { style: { fontSize: 12, color: C.amber, marginBottom: 8 } }, "Add Sets (Correction Mode)"),
-                h("select", { value: addMuscle, onChange: e => setAddMuscle(e.target.value), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, color: C.text, marginBottom: 8, outline: "none" } },
-                  h("option", { value: "" }, "Select muscle group"),
-                  MUSCLE_GROUPS.map(m => h("option", { key: m, value: m }, m)),
-                ),
+              h("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
+                h("button", { onClick: () => startCorrection(x), style: { flex: 1, background: `${C.amber}15`, border: `1px solid ${C.amber}40`, borderRadius: 8, padding: 10, color: C.amber, fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "✏️ Edit Workout"),
+                h("button", { onClick: () => setConfirmDelete(x.id), style: { background: `${C.red}15`, border: `1px solid ${C.red}30`, borderRadius: 8, padding: "10px 14px", color: C.red, fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "🗑"),
+              ),
+              confirmDelete === x.id && h("div", { style: { marginTop: 8, padding: 12, background: `${C.red}10`, borderRadius: 8, border: `1px solid ${C.red}30`, textAlign: "center" } },
+                h("div", { style: { fontSize: 13, color: C.red, fontWeight: 600, marginBottom: 8 } }, "Delete this workout?"),
                 h("div", { style: { display: "flex", gap: 8 } },
-                  h("input", { type: "number", value: addSets, onChange: e => setAddSets(parseInt(e.target.value) || 1), style: { width: 60, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, color: C.text, textAlign: "center", outline: "none" } }),
-                  h("button", { onClick: () => addToSession(x.id), style: { flex: 1, background: C.amber, color: C.bg, border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer" } }, "Add"),
+                  h("button", { onClick: () => deleteWorkout(x.id), style: { flex: 1, background: C.red, color: "#fff", border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 12 } }, "Yes, Delete"),
+                  h("button", { onClick: () => setConfirmDelete(null), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontWeight: 600, cursor: "pointer", fontSize: 12 } }, "Cancel"),
                 ),
-              ) : h("button", { onClick: () => setEditId(x.id), style: { marginTop: 10, background: "none", border: `1px dashed ${C.amber}40`, borderRadius: 8, padding: 8, color: C.amber, fontSize: 12, cursor: "pointer", width: "100%" } }, "✏️ Correction Mode"),
+              ),
+            ),
+            // Editing view (full correction mode)
+            isEditing && h("div", { className: "slide-up", style: { padding: "0 16px 16px", borderTop: `1px solid ${C.amber}40` } },
+              h("div", { style: { fontSize: 11, color: C.amber, textTransform: "uppercase", letterSpacing: 1, padding: "10px 0 6px", fontWeight: 700 } }, "✏️ Correction Mode"),
+              (editData.exercises || []).map((ex, ei) => h("div", { key: ei, style: { marginTop: 8, padding: 12, background: C.bg, borderRadius: 10, border: `1px solid ${C.border}` } },
+                // Exercise name + muscle + remove
+                h("div", { style: { display: "flex", gap: 6, marginBottom: 8, alignItems: "center" } },
+                  h("input", { type: "text", value: ex.name, onChange: e => updateEditEx(ei, "name", e.target.value), style: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px 10px", color: C.text, fontSize: 13, outline: "none" } }),
+                  h("select", { value: ex.muscle, onChange: e => updateEditEx(ei, "muscle", e.target.value), style: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px 6px", color: C.cyan, fontSize: 11, outline: "none", cursor: "pointer" } },
+                    MUSCLE_GROUPS.map(m => h("option", { key: m, value: m }, m)),
+                    h("option", { value: "other" }, "other"),
+                  ),
+                  h("button", { onClick: () => removeExFromEdit(ei), style: { background: "none", border: `1px solid ${C.red}30`, borderRadius: 6, padding: "6px 8px", color: C.red, fontSize: 11, cursor: "pointer", flexShrink: 0 } }, "✕"),
+                ),
+                // Set rows
+                (ex.sets || []).map((s, si) => h("div", { key: si, style: { display: "flex", gap: 6, alignItems: "center", marginBottom: 4 } },
+                  h("span", { style: { fontSize: 11, color: C.textDim, width: 20, textAlign: "center" } }, si + 1),
+                  h("input", { type: "number", inputMode: "decimal", value: s.weight || "", onChange: e => updateEditSet(ei, si, "weight", parseFloat(e.target.value) || 0), placeholder: "kg", style: { flex: 1, background: C.surface, border: `1px solid ${C.cyanDim}`, borderRadius: 6, padding: "6px 8px", color: C.cyan, fontSize: 13, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  h("span", { style: { fontSize: 11, color: C.textDim } }, "×"),
+                  h("input", { type: "number", inputMode: "numeric", value: s.reps || "", onChange: e => updateEditSet(ei, si, "reps", parseInt(e.target.value) || 0), placeholder: "reps", style: { flex: 1, background: C.surface, border: `1px solid ${C.greenDim}`, borderRadius: 6, padding: "6px 8px", color: C.green, fontSize: 13, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  h("button", { onClick: () => removeSetFromEx(ei, si), style: { background: "none", border: "none", color: C.red, fontSize: 11, cursor: "pointer", padding: "4px 6px", opacity: ex.sets.length <= 1 ? 0.3 : 1 } }, "✕"),
+                )),
+                h("button", { onClick: () => addSetToEx(ei), style: { width: "100%", background: "none", border: `1px dashed ${C.border}`, borderRadius: 6, padding: 6, color: C.textDim, cursor: "pointer", fontSize: 11, marginTop: 4 } }, "+ Add Set"),
+              )),
+              h("button", { onClick: addExToEdit, style: { width: "100%", background: "none", border: `1px dashed ${C.cyan}40`, borderRadius: 8, padding: 10, color: C.cyan, cursor: "pointer", fontSize: 12, fontWeight: 600, marginTop: 8 } }, "+ Add Exercise"),
+              h("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
+                h("button", { onClick: saveCorrection, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 8, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 13 } }, "Save Changes"),
+                h("button", { onClick: cancelCorrection, style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, fontWeight: 600, cursor: "pointer", fontSize: 13 } }, "Cancel"),
+              ),
+              h("button", { onClick: () => setConfirmDelete(x.id), style: { width: "100%", marginTop: 8, background: `${C.red}10`, border: `1px solid ${C.red}30`, borderRadius: 8, padding: 10, color: C.red, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, "🗑 Delete Workout"),
+              confirmDelete === x.id && h("div", { style: { marginTop: 8, padding: 12, background: `${C.red}10`, borderRadius: 8, border: `1px solid ${C.red}30`, textAlign: "center" } },
+                h("div", { style: { fontSize: 13, color: C.red, fontWeight: 600, marginBottom: 8 } }, "Delete this workout permanently?"),
+                h("div", { style: { display: "flex", gap: 8 } },
+                  h("button", { onClick: () => deleteWorkout(x.id), style: { flex: 1, background: C.red, color: "#fff", border: "none", borderRadius: 8, padding: 10, fontWeight: 700, cursor: "pointer", fontSize: 12 } }, "Yes, Delete"),
+                  h("button", { onClick: () => setConfirmDelete(null), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontWeight: 600, cursor: "pointer", fontSize: 12 } }, "Cancel"),
+                ),
+              ),
             ),
           );
         }),
@@ -1207,7 +1395,7 @@
         h("button", { onClick: forceUpdate, style: { width: "100%", background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "🔄 Force Update App"),
         h("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", marginBottom: 12 } }, "Clears cache and reloads. Your data is safe."),
         h("button", { onClick: clearAll, style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v14"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v15"),
       );
     }
 
@@ -1273,6 +1461,5 @@
       });
     }
   </script>
-
 </body>
 </html>
