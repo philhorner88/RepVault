@@ -35,6 +35,8 @@
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes countPulse { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
+    @keyframes ringGlow { 0%,100% { filter: drop-shadow(0 0 12px var(--glow-color, rgba(0,229,255,0.25))); } 50% { filter: drop-shadow(0 0 25px var(--glow-color, rgba(0,229,255,0.25))); } }
+    @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
     .fade-in { animation: fadeIn 0.3s ease-out; }
     .slide-up { animation: slideUp 0.4s ease-out; }
   </style>
@@ -57,6 +59,7 @@
     const DEFAULT_TIMERS = { prep: 10, work: 45, restSet: 60, restEx: 60 };
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const CRASH_KEY = "repvault_active_workout";
 
     // Muscle groups — order matters: more specific phrases checked first
     const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "cardio"];
@@ -213,7 +216,8 @@
       bg: "#0a0a0f", surface: "#12121a", surfaceLight: "#1a1a28", border: "#2a2a3a",
       text: "#e8e8f0", textDim: "#8888a0",
       cyan: "#00e5ff", cyanDim: "#00e5ff40", green: "#39ff14", greenDim: "#39ff1440",
-      amber: "#ffb300", amberDim: "#ffb30040", red: "#ff3d3d", redDim: "#ff3d3d40", purple: "#b388ff",
+      amber: "#ffb300", amberDim: "#ffb30040", red: "#ff3d3d", redDim: "#ff3d3d40", purple: "#b388ff", purpleDim: "#b388ff40",
+      gold: "#ffc850", goldDim: "#ffc85040",
     };
     const phaseColor = { [PHASES.PREP]: C.amber, [PHASES.WORK]: C.cyan, [PHASES.REST_SET]: C.green, [PHASES.REST_EX]: C.purple, [PHASES.DONE]: C.green };
 
@@ -288,6 +292,18 @@
     function saveDB(db) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(deepClone(db))); } catch (e) { console.error("Save failed:", e); } }
     function emptyDB() { return { history: [], blueprints: {}, pbs: {}, settings: { timers: { ...DEFAULT_TIMERS }, audioEnabled: true } }; }
 
+    // --- Crash Recovery ---
+    function saveActiveWorkout(wo, phase, clock) {
+      if (!wo) { clearActiveWorkout(); return; }
+      try { localStorage.setItem(CRASH_KEY, JSON.stringify({ wo: deepClone(wo), phase, clock, savedAt: Date.now() })); } catch (e) { console.error("Crash save failed:", e); }
+    }
+    function loadActiveWorkout() {
+      try { const d = localStorage.getItem(CRASH_KEY); if (!d) return null; const snap = JSON.parse(d); if (Date.now() - snap.savedAt > 12 * 60 * 60 * 1000) { clearActiveWorkout(); return null; } return snap; } catch { return null; }
+    }
+    function clearActiveWorkout() { try { localStorage.removeItem(CRASH_KEY); } catch {} }
+
+    const phaseLabel = { [PHASES.PREP]: "GET READY", [PHASES.WORK]: "WORK", [PHASES.REST_SET]: "REST BETWEEN SETS", [PHASES.REST_EX]: "REST BETWEEN EXERCISES", [PHASES.DONE]: "DONE" };
+
     // --- Audio Engine ---
     class AudioEngine {
       constructor() { this.ctx = null; this.enabled = true; this.hb = null; }
@@ -306,6 +322,18 @@
 
     const AppCtx = createContext(null);
 
+    // --- Ring Timer SVG Component ---
+    function RingTimer({ seconds, total, color, size = 170 }) {
+      const r = (size - 6) / 2;
+      const circ = 2 * Math.PI * r;
+      const progress = total > 0 ? Math.max(0, Math.min(1, seconds / total)) : 0;
+      const offset = circ * (1 - progress);
+      return h("svg", { width: size, height: size, viewBox: `0 0 ${size} ${size}`, style: { transform: "rotate(-90deg)", "--glow-color": `${color}40`, animation: "ringGlow 3s ease infinite" } },
+        h("circle", { cx: size/2, cy: size/2, r, fill: "none", stroke: C.border, strokeWidth: 2.5 }),
+        h("circle", { cx: size/2, cy: size/2, r, fill: "none", stroke: color, strokeWidth: 2.5, strokeLinecap: "round", strokeDasharray: circ, strokeDashoffset: offset, style: { filter: `drop-shadow(0 0 6px ${color}50)`, transition: "stroke-dashoffset 0.15s linear" } }),
+      );
+    }
+
     // ============================================================
     // MAIN APP
     // ============================================================
@@ -314,11 +342,31 @@
       const [screen, setScreen] = useState("home");
       const [wo, setWo] = useState(null);
       const [notif, setNotif] = useState(null);
-      // Global timer state — persists across screen navigation
       const [phase, setPhase] = useState(PHASES.PREP);
       const [timer, setTimer] = useState(DEFAULT_TIMERS.prep);
       const [paused, setPaused] = useState(false);
       const [clock, setClock] = useState(0);
+      const [showRestore, setShowRestore] = useState(false);
+      const crashSnap = useRef(null);
+
+      // Check for crashed workout on mount
+      useEffect(() => {
+        const snap = loadActiveWorkout();
+        if (snap && snap.wo) { crashSnap.current = snap; setShowRestore(true); }
+      }, []);
+
+      function restoreWorkout() {
+        const snap = crashSnap.current;
+        if (!snap) return;
+        const restoredWo = snap.wo;
+        const totalElapsed = snap.clock + Math.floor((Date.now() - snap.savedAt) / 1000);
+        restoredWo.startTime = Date.now() - totalElapsed * 1000;
+        setWo(restoredWo); setPhase(snap.phase === PHASES.DONE ? PHASES.DONE : PHASES.WORK);
+        setTimer(0); setClock(totalElapsed); setPaused(true); setScreen("train");
+        setShowRestore(false); crashSnap.current = null;
+        notify("Workout restored! 💪 Paused — tap play when ready.", "success");
+      }
+      function dismissRestore() { clearActiveWorkout(); setShowRestore(false); crashSnap.current = null; }
 
       const persist = useCallback((updater) => {
         setDb(prev => { const next = typeof updater === "function" ? updater(prev) : updater; saveDB(next); return next; });
@@ -329,6 +377,22 @@
 
       return h(AppCtx.Provider, { value: ctx },
         notif && h(Toast, notif),
+        // Crash restore modal
+        showRestore && h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+          h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 20, padding: 28, width: "100%", maxWidth: 360, border: `1px solid ${C.green}40`, textAlign: "center" } },
+            h("div", { style: { fontSize: 48, marginBottom: 12 } }, "🔄"),
+            h("h3", { style: { fontSize: 18, fontWeight: 700, marginBottom: 8 } }, "Workout Recovery"),
+            h("p", { style: { color: C.textDim, fontSize: 13, marginBottom: 6, lineHeight: 1.5 } }, "Found an interrupted workout session."),
+            crashSnap.current && h("div", { style: { background: C.bg, borderRadius: 10, padding: 12, marginBottom: 16, border: `1px solid ${C.border}` } },
+              h("div", { style: { fontSize: 14, fontWeight: 600, marginBottom: 4 } }, `${crashSnap.current.wo.exercises?.length || 0} exercises`),
+              h("div", { style: { fontSize: 12, color: C.textDim } }, `${fmtDur(crashSnap.current.clock)} elapsed • ${crashSnap.current.wo.exercises?.reduce((s, e) => s + e.sets.filter(x => x.completed).length, 0) || 0} sets done`),
+            ),
+            h("div", { style: { display: "flex", gap: 8 } },
+              h("button", { onClick: restoreWorkout, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: 14, fontWeight: 700, cursor: "pointer", fontSize: 14 } }, "Restore"),
+              h("button", { onClick: dismissRestore, style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, fontWeight: 600, cursor: "pointer", fontSize: 14 } }, "Discard"),
+            ),
+          ),
+        ),
         screen === "home" && h(Home),
         screen === "train" && h(Train),
         screen === "blueprints" && h(Blueprints),
@@ -500,6 +564,15 @@
       const curEx = wo?.exercises[wo.currentExIdx];
       const totalSets = wo ? wo.exercises.reduce((s, e) => s + e.sets.length, 0) : 0;
       const doneSets = wo ? wo.exercises.reduce((s, e) => s + e.sets.filter(x => x.completed).length, 0) : 0;
+      const remainingSets = totalSets - doneSets;
+
+      // Estimated time remaining
+      const estRemaining = useMemo(() => {
+        if (!wo || phase === PHASES.DONE) return 0;
+        const avgSetCycle = timers.work + timers.restSet;
+        const remainingExercises = wo.exercises.length - wo.currentExIdx - 1;
+        return Math.max(0, remainingSets * avgSetCycle + remainingExercises * (timers.restEx - timers.restSet));
+      }, [wo?.currentExIdx, wo?.currentSetIdx, remainingSets, timers, phase]);
 
       // Determine which exercise to show stats for: current, or next during REST_EX
       const statsEx = (phase === PHASES.REST_EX && wo) ? wo.exercises[wo.currentExIdx + 1] : curEx;
@@ -597,6 +670,17 @@
       }
 
       useEffect(() => { audio.init(); audio.startHeartbeat(); return () => audio.stopHeartbeat(); }, []);
+
+      // --- CRASH RECOVERY: auto-save workout state every 3s + on state change ---
+      const saveIntervalRef = useRef(null);
+      useEffect(() => {
+        if (!wo) { clearActiveWorkout(); return; }
+        saveActiveWorkout(wo, phase, Math.floor((Date.now() - wo.startTime) / 1000));
+        saveIntervalRef.current = setInterval(() => {
+          saveActiveWorkout(wo, phase, Math.floor((Date.now() - wo.startTime) / 1000));
+        }, 3000);
+        return () => clearInterval(saveIntervalRef.current);
+      }, [wo, phase]);
 
       // Wall-clock based timer — stores the absolute end time so we can catch up after lock/resume
       const phaseEndTime = useRef(Date.now() + (db.settings?.timers?.prep || DEFAULT_TIMERS.prep) * 1000);
@@ -746,10 +830,12 @@
         const newPBs = { ...(db.pbs || {}) };
         session.exercises.forEach(ex => { const k = pbKey(ex.name); const b = newPBs[k] || { maxWeight: 0, maxVolume: 0, maxReps: 0 }; ex.sets.forEach(s => { if (s.weight > b.maxWeight) b.maxWeight = s.weight; if (s.reps > b.maxReps) b.maxReps = s.reps; }); const v = ex.sets.reduce((s, st) => s + st.weight * st.reps, 0); if (v > b.maxVolume) b.maxVolume = v; newPBs[k] = b; });
         persist(prev => ({ ...prev, history: [...prev.history, session], pbs: newPBs }));
+        clearActiveWorkout();
         notify("Workout saved! 💪", "success"); setWo(null); setPhase(PHASES.PREP); setScreen("home");
       }
 
       function quitWorkout() {
+        clearActiveWorkout();
         setWo(null); setPhase(PHASES.PREP); setTimer(DEFAULT_TIMERS.prep); setPaused(false); setClock(0); setShowQuit(false); setScreen("home");
         notify("Workout discarded", "warn");
       }
@@ -853,34 +939,45 @@
 
       const glow = phaseColor[phase] || C.cyan;
       const prog = totalSets > 0 ? doneSets / totalSets : 0;
+      const timerTotal = phase === PHASES.PREP ? timers.prep : phase === PHASES.WORK ? timers.work : phase === PHASES.REST_SET ? timers.restSet : phase === PHASES.REST_EX ? timers.restEx : 0;
 
       return h("div", { style: { minHeight: "100vh", background: C.bg, maxWidth: 500, margin: "0 auto", display: "flex", flexDirection: "column" } },
-        // === FIXED TOP: Timer + Controls ===
-        phase !== PHASES.DONE && curEx && h("div", { style: { position: "sticky", top: 0, zIndex: 50, background: C.bg, borderBottom: `1px solid ${C.border}`, paddingBottom: 8 } },
-          // Status bar row
-          h("div", { style: { padding: "8px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" } },
-            h("button", { onClick: () => setShowQuit(true), style: { background: "none", border: `1px solid ${C.red}40`, borderRadius: 8, padding: "4px 10px", color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer" } }, "Quit"),
-            h("span", { style: { fontSize: 11, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, `⏱ ${fmtDur(clock)}`),
-            h("span", { style: { fontSize: 11, color: C.textDim } }, `${doneSets}/${totalSets}`),
-            h("button", { onClick: () => { audio.toggle(); notify(audio.enabled ? "Audio ON" : "Audio OFF"); }, style: { background: "none", border: "none", color: audio.enabled ? C.cyan : C.textDim, fontSize: 18, cursor: "pointer" } }, audio.enabled ? "🔊" : "🔇"),
+        // === TRAINING UI ===
+        phase !== PHASES.DONE && curEx && h(Fragment, null,
+          // Status bar
+          h("div", { style: { padding: "6px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.border}` } },
+            h("button", { onClick: () => setShowQuit(true), style: { background: "none", border: `1px solid ${C.red}40`, borderRadius: 8, padding: "3px 9px", color: C.red, fontSize: 10, fontWeight: 600, cursor: "pointer" } }, "Quit"),
+            h("div", { style: { textAlign: "center" } },
+              h("span", { style: { fontSize: 10, color: C.textDim, fontFamily: "'JetBrains Mono'" } }, `⏱ ${fmtDur(clock)}`),
+              estRemaining > 0 && h("span", { style: { fontSize: 10, color: C.textDim, fontFamily: "'JetBrains Mono'", marginLeft: 6 } }, `~${fmtDur(estRemaining)} left`),
+            ),
+            h("span", { style: { fontSize: 10, color: C.textDim } }, `${doneSets}/${totalSets}`),
+            h("button", { onClick: () => { audio.toggle(); notify(audio.enabled ? "Audio ON" : "Audio OFF"); }, style: { background: "none", border: "none", color: audio.enabled ? C.cyan : C.textDim, fontSize: 16, cursor: "pointer" } }, audio.enabled ? "🔊" : "🔇"),
           ),
           // Progress bar
           h("div", { style: { height: 3, background: C.border } }, h("div", { style: { height: "100%", width: `${prog * 100}%`, background: C.green, transition: "width 0.5s" } })),
-          // Timer + exercise name + controls in one compact block
-          h("div", { style: { display: "flex", alignItems: "center", padding: "10px 16px", gap: 12 } },
-            // Back button
-            h("button", { onClick: goBack, style: { width: 48, height: 48, borderRadius: "50%", background: C.surface, border: `1px solid ${C.border}`, color: C.text, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, "⏮"),
-            // Timer + info center
-            h("div", { style: { flex: 1, textAlign: "center" } },
-              h("div", { style: { display: "inline-block", padding: "2px 10px", borderRadius: 12, background: `${glow}15`, border: `1px solid ${glow}40`, color: glow, fontSize: 10, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 } }, phase.replace("_", " ")),
-              h("div", { style: { fontSize: 48, fontWeight: 700, color: glow, fontFamily: "'JetBrains Mono'", lineHeight: 1, animation: timer <= 3 ? "countPulse 0.5s ease infinite" : "none", textShadow: `0 0 30px ${glow}30` } }, fmtTime(timer)),
-              h("div", { style: { fontSize: 14, fontWeight: 700, marginTop: 2 } }, curEx.name),
-              h("div", { style: { fontSize: 11, color: C.textDim } }, `Set ${wo.currentSetIdx + 1}/${curEx.sets.length} • ${curEx.muscle}`),
+          // RING TIMER — always dominant
+          h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", padding: "16px 0 8px", position: "relative" } },
+            h("div", { style: { position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, ${glow}08 0%, transparent 60%)`, pointerEvents: "none" } }),
+            // Phase label
+            h("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 10, position: "relative", zIndex: 1 } },
+              h("div", { style: { width: 6, height: 6, borderRadius: "50%", background: glow, animation: "pulseDot 2s ease infinite" } }),
+              h("span", { style: { fontSize: 10, fontWeight: 600, letterSpacing: 2, textTransform: "uppercase", color: glow } }, phaseLabel[phase] || phase.replace("_", " ")),
             ),
-            // Pause button (center emphasis)
-            h("button", { onClick: () => setPaused(!paused), style: { width: 56, height: 56, borderRadius: "50%", background: paused ? C.green : C.amber, border: "none", color: C.bg, fontSize: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `0 0 20px ${paused ? C.greenDim : C.amberDim}`, flexShrink: 0 } }, paused ? "▶" : "⏸"),
-            // Skip button
-            h("button", { onClick: skip, style: { width: 48, height: 48, borderRadius: "50%", background: C.surface, border: `1px solid ${C.border}`, color: C.text, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, "⏭"),
+            // Ring
+            h("div", { style: { position: "relative", width: 170, height: 170, zIndex: 1 } },
+              h(RingTimer, { seconds: timer, total: timerTotal, color: glow, size: 170 }),
+              h("div", { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" } },
+                h("div", { style: { fontSize: 46, fontWeight: 700, color: C.text, fontFamily: "'JetBrains Mono'", lineHeight: 1, letterSpacing: -2, animation: timer <= 3 && timer > 0 ? "countPulse 0.5s ease infinite" : "none" } }, fmtTime(timer)),
+                h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 2 } }, `of ${fmtTime(timerTotal)}`),
+              ),
+            ),
+            // Controls: ⏮ ⏸ ⏭
+            h("div", { style: { display: "flex", gap: 14, marginTop: 12, alignItems: "center", position: "relative", zIndex: 1 } },
+              h("button", { onClick: goBack, style: { width: 44, height: 44, borderRadius: "50%", background: C.surface, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏮"),
+              h("button", { onClick: () => setPaused(!paused), style: { width: 54, height: 54, borderRadius: "50%", background: paused ? C.green : glow, border: "none", color: C.bg, fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: `0 0 18px ${paused ? C.greenDim : glow}40` } }, paused ? "▶" : "⏸"),
+              h("button", { onClick: skip, style: { width: 44, height: 44, borderRadius: "50%", background: C.surface, border: `1px solid ${C.border}`, color: C.text, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" } }, "⏭"),
+            ),
           ),
         ),
 
@@ -894,8 +991,12 @@
             h("button", { onClick: finish, style: { marginTop: 24, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
           ),
           // PB & Last Performance display — shows for current exercise, or upcoming exercise during REST_EX
-          statsEx && phase !== PHASES.DONE && !statsEx.isCardio && (curPB || lastPerf) && h("div", { style: { padding: "12px 16px 0" } },
-            phase === PHASES.REST_EX && h("div", { style: { fontSize: 11, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 } }, `Up next: ${statsEx.name}`),
+          statsEx && phase !== PHASES.DONE && !statsEx.isCardio && (curPB || lastPerf) && h("div", { style: { padding: "4px 16px 0" } },
+            // Exercise name + set info
+            h("div", { style: { marginBottom: 6 } },
+              h("div", { style: { fontSize: 17, fontWeight: 800, letterSpacing: -0.4 } }, phase === PHASES.REST_EX ? (wo.exercises[wo.currentExIdx + 1]?.name || statsEx.name) : statsEx.name),
+              h("div", { style: { fontSize: 11, color: C.textDim } }, phase === PHASES.REST_EX ? `Up next • ${wo.exercises[wo.currentExIdx + 1]?.sets.length || 4} sets` : `Set ${wo.currentSetIdx + 1} of ${curEx.sets.length} • ${curEx.muscle}`),
+            ),
             h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
               curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.amber}30` } },
                 h("div", { style: { fontSize: 10, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "🏆 All-Time PB"),
@@ -913,6 +1014,11 @@
           ),
           // Set inputs
           curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "4px 16px" } },
+            // Show exercise name if no PB/Last section rendered it
+            !(statsEx && !statsEx.isCardio && (curPB || lastPerf)) && h("div", { style: { marginBottom: 6 } },
+              h("div", { style: { fontSize: 17, fontWeight: 800, letterSpacing: -0.4 } }, curEx.name),
+              h("div", { style: { fontSize: 11, color: C.textDim } }, `Set ${wo.currentSetIdx + 1} of ${curEx.sets.length} • ${curEx.muscle}`),
+            ),
             h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
               h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
                 curEx.sets.map((s, si) => h("div", { key: si, style: { display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 10, background: si === wo.currentSetIdx ? `${glow}10` : "transparent", border: si === wo.currentSetIdx ? `1px solid ${glow}30` : "1px solid transparent", opacity: s.completed ? 0.5 : 1 } },
@@ -1219,6 +1325,17 @@
             // Editing view (full correction mode)
             isEditing && h("div", { className: "slide-up", style: { padding: "0 16px 16px", borderTop: `1px solid ${C.amber}40` } },
               h("div", { style: { fontSize: 11, color: C.amber, textTransform: "uppercase", letterSpacing: 1, padding: "10px 0 6px", fontWeight: 700 } }, "✏️ Correction Mode"),
+              // Duration editor
+              h("div", { style: { background: C.bg, borderRadius: 10, padding: 12, marginBottom: 10, border: `1px solid ${C.border}` } },
+                h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 6 } }, "Duration"),
+                h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                  h("input", { type: "number", inputMode: "numeric", value: Math.floor((editData.duration || 0) / 3600), onChange: e => { const hrs = parseInt(e.target.value) || 0; const mins = Math.floor(((editData.duration || 0) % 3600) / 60); setEditData(prev => ({ ...deepClone(prev), duration: hrs * 3600 + mins * 60 })); }, min: 0, style: { width: 60, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.cyan, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  h("span", { style: { fontSize: 12, color: C.textDim } }, "h"),
+                  h("input", { type: "number", inputMode: "numeric", value: Math.floor(((editData.duration || 0) % 3600) / 60), onChange: e => { const hrs = Math.floor((editData.duration || 0) / 3600); const mins = parseInt(e.target.value) || 0; setEditData(prev => ({ ...deepClone(prev), duration: hrs * 3600 + mins * 60 })); }, min: 0, max: 59, style: { width: 60, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px", color: C.cyan, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+                  h("span", { style: { fontSize: 12, color: C.textDim } }, "m"),
+                  h("span", { style: { fontSize: 10, color: C.textDim, marginLeft: 8 } }, `(was ${fmtDur(x.duration || 0)})`),
+                ),
+              ),
               (editData.exercises || []).map((ex, ei) => h("div", { key: ei, style: { marginTop: 8, padding: 12, background: C.bg, borderRadius: 10, border: `1px solid ${C.border}` } },
                 // Exercise name + muscle + remove
                 h("div", { style: { display: "flex", gap: 6, marginBottom: 8, alignItems: "center" } },
@@ -1395,7 +1512,7 @@
         h("button", { onClick: forceUpdate, style: { width: "100%", background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "🔄 Force Update App"),
         h("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", marginBottom: 12 } }, "Clears cache and reloads. Your data is safe."),
         h("button", { onClick: clearAll, style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v15"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v16"),
       );
     }
 
