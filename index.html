@@ -37,6 +37,9 @@
     @keyframes countPulse { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
     @keyframes ringGlow { 0%,100% { filter: drop-shadow(0 0 12px var(--glow-color, rgba(0,229,255,0.25))); } 50% { filter: drop-shadow(0 0 25px var(--glow-color, rgba(0,229,255,0.25))); } }
     @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes pbFlash { 0% { transform: scale(0.8); opacity: 0; } 20% { transform: scale(1.05); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+    @keyframes goldShine { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    @keyframes pbGlow { 0%,100% { box-shadow: 0 0 20px rgba(255,200,80,0.15); } 50% { box-shadow: 0 0 40px rgba(255,200,80,0.3); } }
     .fade-in { animation: fadeIn 0.3s ease-out; }
     .slide-up { animation: slideUp 0.4s ease-out; }
   </style>
@@ -178,15 +181,63 @@
     const NAME_ALIASES = [
       [/\bdb\b/gi, "dumbbell"], [/\bbb\b/gi, "barbell"], [/\bsm\b/gi, "smith machine"],
       [/\boh\b/gi, "overhead"], [/\brdl\b/gi, "romanian deadlift"], [/\bsldl\b/gi, "stiff leg deadlift"],
-      [/\bincl\b/gi, "incline"], [/\bdecl\b/gi, "decline"],
+      [/\bincl\b/gi, "incline"], [/\bdecl\b/gi, "decline"], [/\bham\b/gi, "hamstring"],
+      [/\blat\b/gi, "lateral"], [/\bdb\b/gi, "dumbbell"],
     ];
     function normaliseName(name) {
       let n = name.toLowerCase().trim();
       NAME_ALIASES.forEach(([rx, rep]) => { n = n.replace(rx, rep); });
       return n;
     }
-    // Canonical key for PB lookups — ensures "DB shoulder press" matches "Dumbbell shoulder press"
-    function pbKey(name) { return normaliseName(name); }
+    // Canonical key for PB lookups — aggressive dedup
+    // "Flat DB Bench", "Flat Dumbbell Bench Press", "Flat Dumbbell Bench" → same key
+    const PB_STRIP_WORDS = ["machine", "press", "raise", "exercise", "cable", "seated", "standing", "lying", "single-leg", "single leg", "tempo", "long stride", "short stride"];
+    const PB_SYNONYMS = [
+      [/\bdumbbell\b/g, "db"], [/\bbarbell\b/g, "bb"], [/\bsmith machine\b/g, "smith"],
+      [/\bhamstring\b/g, "ham"], [/\blateral\b/g, "lat"],
+      [/\bcalf raises?\b/g, "calf"], [/\bbench press\b/g, "bench"],
+      [/\bshoulder press\b/g, "shoulder"], [/\boverhead press\b/g, "ohp"],
+      [/\bchest fly\b/g, "fly"], [/\bchest flye\b/g, "fly"],
+      [/\bpull ?down\b/g, "pulldown"], [/\bpull ?up\b/g, "pullup"],
+      [/\bchin ?up\b/g, "chinup"],
+      [/\bbicep curl\b/g, "curl"], [/\bbiceps curl\b/g, "curl"],
+      [/\b(ez[- ]?bar|ez)\b/g, "ez"],
+    ];
+    function pbKey(name) {
+      let n = normaliseName(name);
+      // Apply synonym compression
+      PB_SYNONYMS.forEach(([rx, rep]) => { n = n.replace(rx, rep); });
+      // Remove parenthetical qualifiers like "(Cable)" "(Seated)"
+      n = n.replace(/\([^)]*\)/g, "");
+      // Remove trailing filler words that don't change the exercise identity
+      // BUT keep important differentiators like "incline", "decline", "flat", "wide-grip", "close-grip", "neutral-grip"
+      // Collapse multiple spaces
+      n = n.replace(/\s+/g, " ").trim();
+      return n;
+    }
+    // Merge duplicate PBs: scans db.pbs for entries with same pbKey, keeps the best
+    function deduplicatePBs(pbs) {
+      const merged = {};
+      const keyMap = {}; // pbKey → best display name
+      Object.entries(pbs).forEach(([rawName, pb]) => {
+        const k = pbKey(rawName);
+        if (!merged[k]) {
+          merged[k] = { ...pb };
+          keyMap[k] = rawName;
+        } else {
+          // Merge: keep highest of each
+          if (pb.maxWeight > merged[k].maxWeight) merged[k].maxWeight = pb.maxWeight;
+          if (pb.maxReps > merged[k].maxReps) merged[k].maxReps = pb.maxReps;
+          if ((pb.maxVolume || 0) > (merged[k].maxVolume || 0)) merged[k].maxVolume = pb.maxVolume;
+          // Prefer the longer/more descriptive name
+          if (rawName.length > keyMap[k].length) keyMap[k] = rawName;
+        }
+      });
+      // Rebuild with canonical keys
+      const result = {};
+      Object.entries(merged).forEach(([k, pb]) => { result[k] = pb; result[k]._displayName = keyMap[k]; });
+      return result;
+    }
 
     // --- Week boundary: Monday 00:00 AEST (UTC+10) ---
     function getMonday(date) {
@@ -269,6 +320,9 @@
           let changed = false;
           if (!parsed._pbSeeded) { parsed.pbs = { ...SEED_PBS, ...(parsed.pbs || {}) }; parsed._pbSeeded = true; changed = true; }
           if (!parsed._bpSeeded) { parsed.blueprints = { ...SEED_BLUEPRINTS, ...(parsed.blueprints || {}) }; parsed._bpSeeded = true; changed = true; }
+          // Deduplicate PBs on load
+          const dedupedPBs = deduplicatePBs(parsed.pbs || {});
+          if (Object.keys(dedupedPBs).length !== Object.keys(parsed.pbs || {}).length) { parsed.pbs = dedupedPBs; changed = true; }
           if (changed) saveDB(parsed);
           return parsed;
         }
@@ -464,12 +518,19 @@
         filteredHistory.forEach(session => {
           (session.exercises || []).forEach(ex => {
             const muscle = ex.muscle || detectMuscle(ex.name);
-            if (muscle && muscle !== "other" && muscle !== "cardio") {
+            if (muscle && muscle !== "cardio") {
               counts[muscle] = (counts[muscle] || 0) + (ex.sets || []).filter(s => s.completed !== false).length;
             }
           });
         });
         return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      }, [filteredHistory]);
+
+      // Total working sets — count ALL exercises (including "other" and "cardio")
+      const totalWorkingSets = useMemo(() => {
+        return filteredHistory.reduce((total, session) =>
+          total + (session.exercises || []).reduce((exTotal, ex) =>
+            exTotal + (ex.sets || []).filter(s => s.completed !== false).length, 0), 0);
       }, [filteredHistory]);
 
       function makeExercises(names) {
@@ -501,7 +562,7 @@
           h("div", { style: { display: "flex", gap: 16 } },
             h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, filteredHistory.length), h("div", { style: { fontSize: 11, color: C.textDim } }, "Sessions")),
             h("div", { style: { width: 1, background: C.border } }),
-            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, muscleSets.reduce((s, [, c]) => s + c, 0)), h("div", { style: { fontSize: 11, color: C.textDim } }, "Working Sets")),
+            h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, totalWorkingSets), h("div", { style: { fontSize: 11, color: C.textDim } }, "Working Sets")),
             h("div", { style: { width: 1, background: C.border } }),
             h("div", { style: { flex: 1, textAlign: "center" } }, h("div", { style: { fontSize: 28, fontWeight: 700, color: C.amber, fontFamily: "'JetBrains Mono'" } }, Object.keys(db.pbs || {}).length), h("div", { style: { fontSize: 11, color: C.textDim } }, "PBs")),
           ),
@@ -556,6 +617,8 @@
       const [showQuit, setShowQuit] = useState(false);
       const [editingQueueIdx, setEditingQueueIdx] = useState(null);
       const [editingQueueName, setEditingQueueName] = useState("");
+      const [pbOverlay, setPbOverlay] = useState(null); // { name, weight, reps, prevWeight, prevReps }
+      const [sessionPBs, setSessionPBs] = useState([]); // PBs achieved this workout
 
       const timerRef = useRef(null);
       const clockRef = useRef(null);
@@ -764,6 +827,25 @@
         if (!ex) { finish(); return; }
         if (phase === PHASES.PREP) { setPhase(PHASES.WORK); setPhaseTimer(timers.work); audio.speak(`${ex.name}, Set ${wo.currentSetIdx + 1}, Work`); }
         else if (phase === PHASES.WORK) {
+          // Check for PB before marking complete
+          const completedSet = ex.sets[wo.currentSetIdx];
+          if (completedSet && !ex.isCardio) {
+            const k = pbKey(ex.name);
+            const currentPB = db.pbs?.[k];
+            const setW = completedSet.weight || 0;
+            const setR = completedSet.reps || 0;
+            if (setW > 0 && setR > 0) {
+              const beatWeight = !currentPB || setW > currentPB.maxWeight;
+              const beatReps = currentPB && setW >= currentPB.maxWeight && setR > currentPB.maxReps;
+              if (beatWeight || beatReps) {
+                const pbData = { name: ex.name, weight: setW, reps: setR, prevWeight: currentPB?.maxWeight || 0, prevReps: currentPB?.maxReps || 0, type: beatWeight ? "weight" : "reps" };
+                setPbOverlay(pbData);
+                setSessionPBs(prev => { const exists = prev.find(p => pbKey(p.name) === k); if (exists) { return prev.map(p => pbKey(p.name) === k ? pbData : p); } return [...prev, pbData]; });
+                audio.speak("New Personal Best!");
+                setTimeout(() => setPbOverlay(null), 3500);
+              }
+            }
+          }
           setWo(prev => { const n = deepClone(prev); if (n.exercises[n.currentExIdx]?.sets[n.currentSetIdx]) n.exercises[n.currentExIdx].sets[n.currentSetIdx].completed = true; return n; });
           const lastSet = wo.currentSetIdx >= ex.sets.length - 1, lastEx = wo.currentExIdx >= wo.exercises.length - 1;
           if (lastSet && lastEx) { setPhase(PHASES.DONE); setTimer(0); audio.speak("Workout Complete"); }
@@ -829,7 +911,8 @@
         const session = { id: wo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - wo.startTime) / 1000), exercises: wo.exercises.map(e => ({ name: e.name, muscle: e.muscle, isCardio: e.isCardio, sets: e.sets.map(s => ({ weight: s.weight || 0, reps: s.reps || 0, duration: s.duration || 0, completed: s.completed })) })) };
         const newPBs = { ...(db.pbs || {}) };
         session.exercises.forEach(ex => { const k = pbKey(ex.name); const b = newPBs[k] || { maxWeight: 0, maxVolume: 0, maxReps: 0 }; ex.sets.forEach(s => { if (s.weight > b.maxWeight) b.maxWeight = s.weight; if (s.reps > b.maxReps) b.maxReps = s.reps; }); const v = ex.sets.reduce((s, st) => s + st.weight * st.reps, 0); if (v > b.maxVolume) b.maxVolume = v; newPBs[k] = b; });
-        persist(prev => ({ ...prev, history: [...prev.history, session], pbs: newPBs }));
+        const cleanPBs = deduplicatePBs(newPBs);
+        persist(prev => ({ ...prev, history: [...prev.history, session], pbs: cleanPBs }));
         clearActiveWorkout();
         notify("Workout saved! 💪", "success"); setWo(null); setPhase(PHASES.PREP); setScreen("home");
       }
@@ -983,12 +1066,45 @@
 
         // === SCROLLABLE CONTENT ===
         h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 90 } },
-          // Done screen
-          phase === PHASES.DONE && h("div", { style: { textAlign: "center", padding: "40px 16px" } },
-            h("div", { style: { fontSize: 48 } }, "🏆"),
-            h("h2", { style: { fontSize: 28, fontWeight: 800, color: C.green, marginTop: 12 } }, "Complete!"),
-            h("p", { style: { color: C.textDim, marginTop: 4 } }, `${fmtDur(clock)} • ${doneSets} sets`),
-            h("button", { onClick: finish, style: { marginTop: 24, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
+          // Done screen with PB highlights
+          phase === PHASES.DONE && h("div", { className: "slide-up", style: { padding: "30px 16px" } },
+            h("div", { style: { textAlign: "center" } },
+              h("div", { style: { fontSize: 48 } }, "🏆"),
+              h("h2", { style: { fontSize: 28, fontWeight: 800, color: C.green, marginTop: 12 } }, "Complete!"),
+              h("div", { style: { display: "flex", justifyContent: "center", gap: 16, marginTop: 8 } },
+                h("div", { style: { textAlign: "center" } }, h("div", { style: { fontSize: 20, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, fmtDur(clock)), h("div", { style: { fontSize: 10, color: C.textDim } }, "Duration")),
+                h("div", { style: { width: 1, background: C.border } }),
+                h("div", { style: { textAlign: "center" } }, h("div", { style: { fontSize: 20, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, doneSets), h("div", { style: { fontSize: 10, color: C.textDim } }, "Sets")),
+                h("div", { style: { width: 1, background: C.border } }),
+                h("div", { style: { textAlign: "center" } }, h("div", { style: { fontSize: 20, fontWeight: 700, color: C.amber, fontFamily: "'JetBrains Mono'" } }, wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0) > 1000 ? `${(wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0) / 1000).toFixed(1)}k` : wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0)), h("div", { style: { fontSize: 10, color: C.textDim } }, "Volume (kg)")),
+              ),
+            ),
+            // Session PBs
+            sessionPBs.length > 0 && h("div", { style: { marginTop: 16, background: `linear-gradient(135deg, rgba(255,200,80,0.06), rgba(255,200,80,0.02))`, borderRadius: 14, padding: 16, border: `1px solid rgba(255,200,80,0.15)`, animation: "pbGlow 3s ease infinite" } },
+              h("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 10, textAlign: "center", fontWeight: 700 } }, `🏆 ${sessionPBs.length} New Personal Best${sessionPBs.length > 1 ? "s" : ""}`),
+              sessionPBs.map((pb, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "rgba(255,200,80,0.06)", borderRadius: 10, marginBottom: 4, border: "1px solid rgba(255,200,80,0.1)" } },
+                h("div", { style: { flex: 1 } },
+                  h("div", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, pb.name),
+                  h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 2 } }, pb.prevWeight > 0 ? `Previous: ${pb.prevWeight}kg × ${pb.prevReps}` : "First recorded PB"),
+                ),
+                h("div", { style: { textAlign: "right" } },
+                  h("div", { style: { fontSize: 18, fontWeight: 700, fontFamily: "'JetBrains Mono'", background: "linear-gradient(135deg, #ffc850, #ffdd80, #ffc850)", backgroundSize: "200% 100%", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", animation: "goldShine 3s ease infinite" } }, `${pb.weight}kg`),
+                  h("div", { style: { fontSize: 11, color: C.green, fontFamily: "'JetBrains Mono'" } }, `× ${pb.reps}`),
+                ),
+              )),
+            ),
+            // Exercise breakdown
+            h("div", { style: { marginTop: 16, background: C.surface, borderRadius: 14, padding: 14, border: `1px solid ${C.border}` } },
+              wo.exercises.map((ex, i) => {
+                const weights = ex.sets.filter(s => s.weight > 0).map(s => s.weight);
+                const isPB = sessionPBs.some(pb => pbKey(pb.name) === pbKey(ex.name));
+                return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: i < wo.exercises.length - 1 ? `1px solid ${C.border}40` : "none" } },
+                  h("div", { style: { flex: 1, fontSize: 12, fontWeight: 500, color: isPB ? C.gold : C.textDim } }, isPB ? "🏆 " : "", ex.name),
+                  h("div", { style: { fontSize: 11, fontFamily: "'JetBrains Mono'", color: C.textDim } }, weights.length > 0 ? weights.join("·") : ex.isCardio ? `${ex.sets[0]?.duration || 0}m` : "—"),
+                );
+              }),
+            ),
+            h("button", { onClick: finish, style: { width: "100%", marginTop: 20, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
           ),
           // PB & Last Performance display — shows for current exercise, or upcoming exercise during REST_EX
           statsEx && phase !== PHASES.DONE && !statsEx.isCardio && (curPB || lastPerf) && h("div", { style: { padding: "4px 16px 0" } },
@@ -1122,12 +1238,25 @@
             ),
           ),
         ),
+        // PB Achievement Overlay
+        pbOverlay && h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 250, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, animation: "pbFlash 0.8s ease forwards" }, onClick: () => setPbOverlay(null) },
+          h("div", { style: { textAlign: "center", maxWidth: 320 } },
+            h("div", { style: { fontSize: 60, marginBottom: 10, filter: "drop-shadow(0 0 22px rgba(255,200,80,0.3))" } }, "🏆"),
+            h("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: 3, textTransform: "uppercase", color: C.gold, marginBottom: 6 } }, "NEW PERSONAL BEST"),
+            h("div", { style: { fontSize: 18, fontWeight: 800, marginBottom: 4 } }, pbOverlay.name),
+            h("div", { style: { background: "linear-gradient(135deg, rgba(255,200,80,0.08), rgba(255,200,80,0.03))", borderRadius: 16, padding: 20, border: "1px solid rgba(255,200,80,0.15)", marginTop: 12, animation: "pbGlow 3s ease infinite" } },
+              h("div", { style: { fontSize: 44, fontWeight: 700, fontFamily: "'JetBrains Mono'", letterSpacing: -2, background: "linear-gradient(135deg, #ffc850, #ffdd80, #ffc850)", backgroundSize: "200% 100%", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", animation: "goldShine 3s ease infinite" } }, `${pbOverlay.weight}kg`),
+              h("div", { style: { fontSize: 14, color: C.gold, marginTop: 4 } }, `× ${pbOverlay.reps} reps`),
+              pbOverlay.prevWeight > 0 && h("div", { style: { marginTop: 12, display: "flex", justifyContent: "space-between", borderTop: "1px solid rgba(255,200,80,0.1)", paddingTop: 10 } },
+                h("div", null, h("div", { style: { fontSize: 9, color: C.textDim, textTransform: "uppercase", letterSpacing: 1 } }, "Previous"), h("div", { style: { fontSize: 15, fontFamily: "'JetBrains Mono'", color: C.textDim, textDecoration: "line-through" } }, `${pbOverlay.prevWeight}kg × ${pbOverlay.prevReps}`)),
+                h("div", { style: { textAlign: "right" } }, h("div", { style: { fontSize: 9, color: C.green, textTransform: "uppercase", letterSpacing: 1 } }, "Gained"), h("div", { style: { fontSize: 15, fontFamily: "'JetBrains Mono'", color: C.green, fontWeight: 700 } }, pbOverlay.type === "weight" ? `+${pbOverlay.weight - pbOverlay.prevWeight}kg` : `+${pbOverlay.reps - pbOverlay.prevReps} reps`)),
+              ),
+            ),
+            h("div", { style: { marginTop: 14, fontSize: 10, color: C.textDim } }, "Tap to dismiss • Auto-dismiss 3s"),
+          ),
+        ),
       );
     }
-
-    // ============================================================
-    // BLUEPRINTS
-    // ============================================================
     function Blueprints() {
       const { db, persist, notify, setWo, setScreen } = useContext(AppCtx);
       const [day, setDay] = useState(DAYS[0]);
@@ -1404,6 +1533,32 @@
 
       const pbs = Object.entries(db.pbs || {}).sort((a, b) => b[1].maxWeight - a[1].maxWeight);
 
+      // PBs set this week — scan history for sessions this week, find max per exercise
+      const weekPBs = useMemo(() => {
+        const mondayStart = thisMonday();
+        const thisWeekSessions = db.history.filter(x => new Date(x.date) >= mondayStart);
+        const results = [];
+        const allPBs = db.pbs || {};
+        thisWeekSessions.forEach(session => {
+          (session.exercises || []).forEach(ex => {
+            const k = pbKey(ex.name);
+            const pb = allPBs[k];
+            if (!pb) return;
+            const sessionMax = Math.max(0, ...(ex.sets || []).map(s => s.weight || 0));
+            if (sessionMax >= pb.maxWeight && sessionMax > 0) {
+              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: pb.maxReps });
+            }
+          });
+        });
+        return results;
+      }, [db.history, db.pbs]);
+
+      function runDedup() {
+        const deduped = deduplicatePBs(db.pbs || {});
+        persist(prev => ({ ...prev, pbs: deduped }));
+        notify(`Cleaned up PBs: ${Object.keys(db.pbs || {}).length} → ${Object.keys(deduped).length}`, "success");
+      }
+
       function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.maxReps); }
       function savePB() {
         persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { ...prev.pbs[editingPB], maxWeight: pbWeight, maxReps: pbReps } } }));
@@ -1440,9 +1595,23 @@
             }),
           ),
         ),
+        // PBs set this week
+        weekPBs.length > 0 && h("div", { style: { background: `linear-gradient(135deg, ${C.gold}08, ${C.gold}03)`, borderRadius: 16, padding: 20, border: `1px solid ${C.gold}25`, marginBottom: 12 } },
+          h("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, `🏆 This Week's PBs (${weekPBs.length})`),
+          weekPBs.map(pb => h("div", { key: pb.key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: `${C.gold}08`, borderRadius: 8, marginBottom: 4, border: `1px solid ${C.gold}15` } },
+            h("span", { style: { fontSize: 13, fontWeight: 600, textTransform: "capitalize", flex: 1 } }, pb.name),
+            h("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+              h("span", { style: { fontSize: 14, color: C.gold, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${pb.weight}kg`),
+              h("span", { style: { fontSize: 12, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.reps}r`),
+            ),
+          )),
+        ),
         // PBs — editable
         h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "🏆 Personal Bests"),
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
+            h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1 } }, `🏆 All Personal Bests (${pbs.length})`),
+            h("button", { onClick: runDedup, style: { background: "none", border: `1px solid ${C.amber}30`, borderRadius: 6, padding: "4px 8px", color: C.amber, fontSize: 10, fontWeight: 600, cursor: "pointer" } }, "🧹 Merge Dupes"),
+          ),
           pbs.length === 0 && h("div", { style: { color: C.textDim, fontSize: 13 } }, "No PBs recorded yet"),
           pbs.map(([name, pb]) => editingPB === name
             ? h("div", { key: name, className: "slide-up", style: { padding: "12px", background: C.bg, borderRadius: 10, marginBottom: 4, border: `1px solid ${C.amber}40` } },
