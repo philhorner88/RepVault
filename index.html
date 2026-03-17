@@ -225,11 +225,10 @@
           merged[k] = { ...pb };
           keyMap[k] = rawName;
         } else {
-          // Merge: keep highest of each
-          if (pb.maxWeight > merged[k].maxWeight) merged[k].maxWeight = pb.maxWeight;
+          if (pb.maxWeight > merged[k].maxWeight) { merged[k].maxWeight = pb.maxWeight; merged[k].repsAtMax = pb.repsAtMax || 0; }
+          else if (pb.maxWeight === merged[k].maxWeight && (pb.repsAtMax || 0) > (merged[k].repsAtMax || 0)) { merged[k].repsAtMax = pb.repsAtMax; }
           if (pb.maxReps > merged[k].maxReps) merged[k].maxReps = pb.maxReps;
           if ((pb.maxVolume || 0) > (merged[k].maxVolume || 0)) merged[k].maxVolume = pb.maxVolume;
-          // Prefer the longer/more descriptive name
           if (rawName.length > keyMap[k].length) keyMap[k] = rawName;
         }
       });
@@ -274,16 +273,16 @@
 
     // --- Storage ---
     const SEED_PBS = {
-      "standing calf raise": { maxWeight: 136, maxReps: 10, maxVolume: 2460 },
-      "flat dumbbell bench press": { maxWeight: 70, maxReps: 9, maxVolume: 1890 },
-      "incline dumbbell bench press": { maxWeight: 60, maxReps: 10, maxVolume: 1860 },
-      "leg curl": { maxWeight: 45, maxReps: 10, maxVolume: 1620 },
-      "seated dumbbell shoulder press": { maxWeight: 44, maxReps: 10, maxVolume: 1500 },
-      "chest-supported row": { maxWeight: 40, maxReps: 10, maxVolume: 1600 },
-      "smith machine split squat": { maxWeight: 40, maxReps: 10, maxVolume: 1360 },
-      "split squat": { maxWeight: 40, maxReps: 10, maxVolume: 1040 },
-      "cable chest fly": { maxWeight: 27, maxReps: 10, maxVolume: 905 },
-      "incline fly": { maxWeight: 20, maxReps: 8, maxVolume: 334 },
+      "standing calf raise": { maxWeight: 136, maxReps: 10, maxVolume: 2460, repsAtMax: 10 },
+      "flat dumbbell bench press": { maxWeight: 70, maxReps: 9, maxVolume: 1890, repsAtMax: 9 },
+      "incline dumbbell bench press": { maxWeight: 60, maxReps: 10, maxVolume: 1860, repsAtMax: 10 },
+      "leg curl": { maxWeight: 45, maxReps: 10, maxVolume: 1620, repsAtMax: 10 },
+      "seated dumbbell shoulder press": { maxWeight: 44, maxReps: 10, maxVolume: 1500, repsAtMax: 10 },
+      "chest-supported row": { maxWeight: 40, maxReps: 10, maxVolume: 1600, repsAtMax: 10 },
+      "smith machine split squat": { maxWeight: 40, maxReps: 10, maxVolume: 1360, repsAtMax: 10 },
+      "split squat": { maxWeight: 40, maxReps: 10, maxVolume: 1040, repsAtMax: 10 },
+      "cable chest fly": { maxWeight: 27, maxReps: 10, maxVolume: 905, repsAtMax: 10 },
+      "incline fly": { maxWeight: 20, maxReps: 8, maxVolume: 334, repsAtMax: 8 },
     };
     function mkBPEx(name) { return { name, muscle: detectMuscle(name), isCardio: isCardio(name) }; }
     const SEED_BLUEPRINTS = {
@@ -533,6 +532,25 @@
             exTotal + (ex.sets || []).filter(s => s.completed !== false).length, 0), 0);
       }, [filteredHistory]);
 
+      // PBs achieved this week
+      const weekPBs = useMemo(() => {
+        const weekSessions = db.history.filter(x => new Date(x.date) >= mondayStart);
+        const results = [];
+        const allPBs = db.pbs || {};
+        weekSessions.forEach(session => {
+          (session.exercises || []).forEach(ex => {
+            const k = pbKey(ex.name);
+            const pb = allPBs[k];
+            if (!pb) return;
+            const sessionMax = Math.max(0, ...(ex.sets || []).map(s => s.weight || 0));
+            if (sessionMax >= pb.maxWeight && sessionMax > 0) {
+              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: pb.repsAtMax || pb.maxReps });
+            }
+          });
+        });
+        return results;
+      }, [db.history, db.pbs]);
+
       function makeExercises(names) {
         return names.map(name => ({
           id: genId(), name, muscle: detectMuscle(name), isCardio: isCardio(name),
@@ -584,6 +602,17 @@
               );
             }),
           ),
+        ),
+        // This week's PBs
+        weekPBs.length > 0 && h("div", { style: { background: `linear-gradient(135deg, ${C.gold}08, ${C.gold}03)`, borderRadius: 16, padding: 16, border: `1px solid ${C.gold}25`, marginBottom: 16 } },
+          h("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10, fontWeight: 700 } }, `🏆 This Week's PBs (${weekPBs.length})`),
+          weekPBs.map(pb => h("div", { key: pb.key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: `${C.gold}08`, borderRadius: 8, marginBottom: 3, border: `1px solid ${C.gold}12` } },
+            h("span", { style: { fontSize: 12, fontWeight: 600, textTransform: "capitalize", flex: 1 } }, pb.name),
+            h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+              h("span", { style: { fontSize: 13, color: C.gold, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${pb.weight}kg`),
+              h("span", { style: { fontSize: 11, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.reps}r`),
+            ),
+          )),
         ),
         // Today's blueprint
         todayBP && h("button", { onClick: () => startBP(todayBP), style: { width: "100%", background: `linear-gradient(135deg, ${C.cyan}15, ${C.green}15)`, border: `1px solid ${C.cyan}40`, borderRadius: 16, padding: 20, color: C.text, cursor: "pointer", textAlign: "left", marginBottom: 16 } },
@@ -910,7 +939,18 @@
       function finish() {
         const session = { id: wo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - wo.startTime) / 1000), exercises: wo.exercises.map(e => ({ name: e.name, muscle: e.muscle, isCardio: e.isCardio, sets: e.sets.map(s => ({ weight: s.weight || 0, reps: s.reps || 0, duration: s.duration || 0, completed: s.completed })) })) };
         const newPBs = { ...(db.pbs || {}) };
-        session.exercises.forEach(ex => { const k = pbKey(ex.name); const b = newPBs[k] || { maxWeight: 0, maxVolume: 0, maxReps: 0 }; ex.sets.forEach(s => { if (s.weight > b.maxWeight) b.maxWeight = s.weight; if (s.reps > b.maxReps) b.maxReps = s.reps; }); const v = ex.sets.reduce((s, st) => s + st.weight * st.reps, 0); if (v > b.maxVolume) b.maxVolume = v; newPBs[k] = b; });
+        session.exercises.forEach(ex => {
+          const k = pbKey(ex.name);
+          const b = newPBs[k] || { maxWeight: 0, maxVolume: 0, maxReps: 0, repsAtMax: 0 };
+          ex.sets.forEach(s => {
+            if (s.weight > b.maxWeight) { b.maxWeight = s.weight; b.repsAtMax = s.reps; }
+            else if (s.weight === b.maxWeight && s.reps > b.repsAtMax) { b.repsAtMax = s.reps; }
+            if (s.reps > b.maxReps) b.maxReps = s.reps;
+          });
+          const v = ex.sets.reduce((s, st) => s + st.weight * st.reps, 0);
+          if (v > b.maxVolume) b.maxVolume = v;
+          newPBs[k] = b;
+        });
         const cleanPBs = deduplicatePBs(newPBs);
         persist(prev => ({ ...prev, history: [...prev.history, session], pbs: cleanPBs }));
         clearActiveWorkout();
@@ -1116,9 +1156,9 @@
             h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
               curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.amber}30` } },
                 h("div", { style: { fontSize: 10, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "🏆 All-Time PB"),
-                h("div", { style: { fontSize: 18, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${curPB.maxWeight}kg`),
+                h("div", { style: { fontSize: 18, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${curPB.maxWeight}kg × ${curPB.repsAtMax || curPB.maxReps}`),
                 pbSession && h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, new Date(pbSession.date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })),
-                h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 1 } }, `${curPB.maxReps} reps • ${curPB.maxVolume}kg vol`),
+                h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 1 } }, `Vol: ${curPB.maxVolume}kg`),
               ),
               lastPerf && h("div", { style: { flex: 1, background: `${C.cyan}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.cyan}30` } },
                 h("div", { style: { fontSize: 10, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "📅 Last Session"),
@@ -1546,7 +1586,7 @@
             if (!pb) return;
             const sessionMax = Math.max(0, ...(ex.sets || []).map(s => s.weight || 0));
             if (sessionMax >= pb.maxWeight && sessionMax > 0) {
-              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: pb.maxReps });
+              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: pb.repsAtMax || pb.maxReps });
             }
           });
         });
@@ -1559,9 +1599,9 @@
         notify(`Cleaned up PBs: ${Object.keys(db.pbs || {}).length} → ${Object.keys(deduped).length}`, "success");
       }
 
-      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.maxReps); }
+      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.repsAtMax || pb.maxReps); }
       function savePB() {
-        persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { ...prev.pbs[editingPB], maxWeight: pbWeight, maxReps: pbReps } } }));
+        persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { ...prev.pbs[editingPB], maxWeight: pbWeight, maxReps: pbReps, repsAtMax: pbReps } } }));
         setEditingPB(null); notify("PB updated", "success");
       }
       function deletePB(name) {
@@ -1636,7 +1676,7 @@
                 h("span", { style: { fontSize: 13, fontWeight: 500, textTransform: "capitalize", flex: 1 } }, name),
                 h("div", { style: { display: "flex", gap: 12, alignItems: "center" } },
                   h("span", { style: { fontSize: 13, color: C.cyan, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${pb.maxWeight}kg`),
-                  h("span", { style: { fontSize: 13, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.maxReps}r`),
+                  h("span", { style: { fontSize: 13, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.repsAtMax || pb.maxReps}r`),
                   h("span", { style: { fontSize: 11, color: C.textDim, marginLeft: 4 } }, "✏️"),
                 ),
               ),
