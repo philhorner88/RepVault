@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -6,17 +7,20 @@
   <title>RepVault</title>
 
   <!-- PWA Meta -->
+
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#0a0a0f">
   <meta name="background-color" content="#0a0a0f">
 
   <!-- iOS PWA Meta -->
+
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="RepVault">
   <link rel="apple-touch-icon" href="icon-192.png">
 
   <!-- Fonts -->
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -43,12 +47,15 @@
     .fade-in { animation: fadeIn 0.3s ease-out; }
     .slide-up { animation: slideUp 0.4s ease-out; }
   </style>
+
 </head>
 <body>
   <div id="root"></div>
 
   <!-- React via CDN -->
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 
   <script>
@@ -322,6 +329,20 @@
           // Deduplicate PBs on load
           const dedupedPBs = deduplicatePBs(parsed.pbs || {});
           if (Object.keys(dedupedPBs).length !== Object.keys(parsed.pbs || {}).length) { parsed.pbs = dedupedPBs; changed = true; }
+          // Backfill repsAtMax from history for PBs that don't have it
+          Object.entries(parsed.pbs || {}).forEach(([k, pb]) => {
+            if (pb.repsAtMax != null && pb.repsAtMax > 0) return; // already has it
+            let bestRepsAtMax = 0;
+            (parsed.history || []).forEach(session => {
+              (session.exercises || []).forEach(ex => {
+                if (pbKey(ex.name) !== k) return;
+                (ex.sets || []).forEach(s => {
+                  if (s.weight === pb.maxWeight && (s.reps || 0) > bestRepsAtMax) bestRepsAtMax = s.reps;
+                });
+              });
+            });
+            if (bestRepsAtMax > 0) { parsed.pbs[k].repsAtMax = bestRepsAtMax; changed = true; }
+          });
           if (changed) saveDB(parsed);
           return parsed;
         }
@@ -544,7 +565,7 @@
             if (!pb) return;
             const sessionMax = Math.max(0, ...(ex.sets || []).map(s => s.weight || 0));
             if (sessionMax >= pb.maxWeight && sessionMax > 0) {
-              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: pb.repsAtMax || pb.maxReps });
+              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: (pb.repsAtMax != null ? pb.repsAtMax : pb.maxReps) });
             }
           });
         });
@@ -864,10 +885,11 @@
             const setW = completedSet.weight || 0;
             const setR = completedSet.reps || 0;
             if (setW > 0 && setR > 0) {
+              const prevRepsAtMax = currentPB ? ((currentPB.repsAtMax != null ? currentPB.repsAtMax : (currentPB.maxReps || 0))) : 0;
               const beatWeight = !currentPB || setW > currentPB.maxWeight;
-              const beatReps = currentPB && setW >= currentPB.maxWeight && setR > currentPB.maxReps;
-              if (beatWeight || beatReps) {
-                const pbData = { name: ex.name, weight: setW, reps: setR, prevWeight: currentPB?.maxWeight || 0, prevReps: currentPB?.maxReps || 0, type: beatWeight ? "weight" : "reps" };
+              const beatRepsAtMax = currentPB && setW >= currentPB.maxWeight && setR > prevRepsAtMax;
+              if (beatWeight || beatRepsAtMax) {
+                const pbData = { name: ex.name, weight: setW, reps: setR, prevWeight: currentPB?.maxWeight || 0, prevReps: prevRepsAtMax, type: beatWeight ? "weight" : "reps" };
                 setPbOverlay(pbData);
                 setSessionPBs(prev => { const exists = prev.find(p => pbKey(p.name) === k); if (exists) { return prev.map(p => pbKey(p.name) === k ? pbData : p); } return [...prev, pbData]; });
                 audio.speak("New Personal Best!");
@@ -937,7 +959,15 @@
       }
 
       function finish() {
-        const session = { id: wo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - wo.startTime) / 1000), exercises: wo.exercises.map(e => ({ name: e.name, muscle: e.muscle, isCardio: e.isCardio, sets: e.sets.map(s => ({ weight: s.weight || 0, reps: s.reps || 0, duration: s.duration || 0, completed: s.completed })) })) };
+        // When finishing from DONE phase, all sets were completed — ensure they're marked
+        const finalExercises = wo.exercises.map(e => ({
+          name: e.name, muscle: e.muscle, isCardio: e.isCardio,
+          sets: e.sets.map(s => ({
+            weight: s.weight || 0, reps: s.reps || 0, duration: s.duration || 0,
+            completed: phase === PHASES.DONE ? true : s.completed
+          }))
+        }));
+        const session = { id: wo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - wo.startTime) / 1000), exercises: finalExercises };
         const newPBs = { ...(db.pbs || {}) };
         session.exercises.forEach(ex => {
           const k = pbKey(ex.name);
@@ -1114,7 +1144,7 @@
               h("div", { style: { display: "flex", justifyContent: "center", gap: 16, marginTop: 8 } },
                 h("div", { style: { textAlign: "center" } }, h("div", { style: { fontSize: 20, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, fmtDur(clock)), h("div", { style: { fontSize: 10, color: C.textDim } }, "Duration")),
                 h("div", { style: { width: 1, background: C.border } }),
-                h("div", { style: { textAlign: "center" } }, h("div", { style: { fontSize: 20, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, doneSets), h("div", { style: { fontSize: 10, color: C.textDim } }, "Sets")),
+                h("div", { style: { textAlign: "center" } }, h("div", { style: { fontSize: 20, fontWeight: 700, color: C.green, fontFamily: "'JetBrains Mono'" } }, totalSets), h("div", { style: { fontSize: 10, color: C.textDim } }, "Sets")),
                 h("div", { style: { width: 1, background: C.border } }),
                 h("div", { style: { textAlign: "center" } }, h("div", { style: { fontSize: 20, fontWeight: 700, color: C.amber, fontFamily: "'JetBrains Mono'" } }, wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0) > 1000 ? `${(wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0) / 1000).toFixed(1)}k` : wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0)), h("div", { style: { fontSize: 10, color: C.textDim } }, "Volume (kg)")),
               ),
@@ -1156,7 +1186,7 @@
             h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
               curPB && h("div", { style: { flex: 1, background: `${C.amber}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.amber}30` } },
                 h("div", { style: { fontSize: 10, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "🏆 All-Time PB"),
-                h("div", { style: { fontSize: 18, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${curPB.maxWeight}kg × ${curPB.repsAtMax || curPB.maxReps}`),
+                h("div", { style: { fontSize: 18, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${curPB.maxWeight}kg × ${curPB.repsAtMax != null ? curPB.repsAtMax : curPB.maxReps}`),
                 pbSession && h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, new Date(pbSession.date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })),
                 h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 1 } }, `Vol: ${curPB.maxVolume}kg`),
               ),
@@ -1586,7 +1616,7 @@
             if (!pb) return;
             const sessionMax = Math.max(0, ...(ex.sets || []).map(s => s.weight || 0));
             if (sessionMax >= pb.maxWeight && sessionMax > 0) {
-              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: pb.repsAtMax || pb.maxReps });
+              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: (pb.repsAtMax != null ? pb.repsAtMax : pb.maxReps) });
             }
           });
         });
@@ -1599,7 +1629,7 @@
         notify(`Cleaned up PBs: ${Object.keys(db.pbs || {}).length} → ${Object.keys(deduped).length}`, "success");
       }
 
-      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps(pb.repsAtMax || pb.maxReps); }
+      function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps((pb.repsAtMax != null ? pb.repsAtMax : pb.maxReps)); }
       function savePB() {
         persist(prev => ({ ...prev, pbs: { ...prev.pbs, [editingPB]: { ...prev.pbs[editingPB], maxWeight: pbWeight, maxReps: pbReps, repsAtMax: pbReps } } }));
         setEditingPB(null); notify("PB updated", "success");
@@ -1676,7 +1706,7 @@
                 h("span", { style: { fontSize: 13, fontWeight: 500, textTransform: "capitalize", flex: 1 } }, name),
                 h("div", { style: { display: "flex", gap: 12, alignItems: "center" } },
                   h("span", { style: { fontSize: 13, color: C.cyan, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${pb.maxWeight}kg`),
-                  h("span", { style: { fontSize: 13, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.repsAtMax || pb.maxReps}r`),
+                  h("span", { style: { fontSize: 13, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${(pb.repsAtMax != null ? pb.repsAtMax : pb.maxReps)}r`),
                   h("span", { style: { fontSize: 11, color: C.textDim, marginLeft: 4 } }, "✏️"),
                 ),
               ),
@@ -1787,5 +1817,6 @@
       });
     }
   </script>
+
 </body>
 </html>
