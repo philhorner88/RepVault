@@ -1360,11 +1360,16 @@
       const { db, persist, notify, setWo, setScreen } = useContext(AppCtx);
       const [day, setDay] = useState(DAYS[0]);
       const [editName, setEditName] = useState("");
-      const [editExs, setEditExs] = useState("");
       const [editing, setEditing] = useState(false);
+      const textareaRef = useRef(null);
       const bp = db.blueprints?.[day];
 
-      function startEdit() { setEditName(bp?.name || `${day} Session`); setEditExs(bp?.exercises?.map(e => e.name).join("\n") || ""); setEditing(true); }
+      function startEdit() {
+        setEditName(bp?.name || `${day} Session`);
+        setEditing(true);
+        // Set textarea value after render
+        setTimeout(() => { if (textareaRef.current) textareaRef.current.value = bp?.exercises?.map(e => e.name).join("\n") || ""; }, 50);
+      }
       function updateExMuscle(idx, newMuscle) {
         persist(prev => {
           const bps = { ...prev.blueprints };
@@ -1378,10 +1383,17 @@
         notify("Muscle group updated", "success");
       }
       function save() {
-        const lines = editExs.split("\n").map(l => l.trim()).filter(Boolean);
-        const exs = lines.map(name => ({ name, muscle: detectMuscle(name), isCardio: isCardio(name), duration: isCardio(name) ? 30 : undefined }));
-        persist(prev => ({ ...prev, blueprints: { ...prev.blueprints, [day]: { name: editName, exercises: exs } } }));
-        setEditing(false); notify("Blueprint saved", "success");
+        try {
+          const text = textareaRef.current?.value || "";
+          const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+          if (lines.length === 0) { notify("No exercises to save", "warn"); return; }
+          const exs = lines.map(name => ({ name, muscle: detectMuscle(name), isCardio: isCardio(name), duration: isCardio(name) ? 30 : undefined }));
+          persist(prev => ({ ...prev, blueprints: { ...prev.blueprints, [day]: { name: editName || `${day} Session`, exercises: exs } } }));
+          setEditing(false); notify(`Saved ${exs.length} exercises`, "success");
+        } catch (e) {
+          console.error("Blueprint save error:", e);
+          notify("Save failed: " + e.message, "error");
+        }
       }
       function load() {
         if (!bp?.exercises?.length) return;
@@ -1419,7 +1431,7 @@
             h("button", { onClick: () => setEditing(false), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, fontWeight: 600, cursor: "pointer" } }, "Cancel"),
           ),
           h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 6 } }, "Exercises (one per line):"),
-          h("textarea", { value: editExs, onChange: e => setEditExs(e.target.value), rows: 12, placeholder: "Bench Press\nLat Pulldown\nLeg Press", style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 14, resize: "vertical", outline: "none" } }),
+          h("textarea", { ref: textareaRef, defaultValue: "", rows: 12, placeholder: "Bench Press\nLat Pulldown\nLeg Press", style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 14, resize: "vertical", outline: "none" } }),
         ),
       );
     }
