@@ -188,8 +188,7 @@
     const NAME_ALIASES = [
       [/\bdb\b/gi, "dumbbell"], [/\bbb\b/gi, "barbell"], [/\bsm\b/gi, "smith machine"],
       [/\boh\b/gi, "overhead"], [/\brdl\b/gi, "romanian deadlift"], [/\bsldl\b/gi, "stiff leg deadlift"],
-      [/\bincl\b/gi, "incline"], [/\bdecl\b/gi, "decline"], [/\bham\b/gi, "hamstring"],
-      [/\blat\b/gi, "lateral"], [/\bdb\b/gi, "dumbbell"],
+      [/\bincl\b/gi, "incline"], [/\bdecl\b/gi, "decline"], [/\bham curl\b/gi, "hamstring curl"],
     ];
     function normaliseName(name) {
       let n = name.toLowerCase().trim();
@@ -1414,12 +1413,13 @@
           ) : h("button", { onClick: startEdit, style: { width: "100%", background: `${C.cyan}15`, border: `1px dashed ${C.cyan}40`, borderRadius: 10, padding: 16, color: C.cyan, cursor: "pointer", fontSize: 14, fontWeight: 600 } }, "+ Create Plan"),
         ) : h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}` } },
           h("input", { value: editName, onChange: e => setEditName(e.target.value), placeholder: "Session Name", style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 15, marginBottom: 12, outline: "none" } }),
-          h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 6 } }, "Exercises (one per line):"),
-          h("textarea", { value: editExs, onChange: e => setEditExs(e.target.value), rows: 8, placeholder: "Bench Press\nLat Pulldown\nLeg Press", style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 14, resize: "none", outline: "none" } }),
-          h("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
+          // Save buttons ABOVE the textarea so they're always reachable
+          h("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
             h("button", { onClick: save, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 10, padding: 14, fontWeight: 700, cursor: "pointer" } }, "Save"),
             h("button", { onClick: () => setEditing(false), style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, fontWeight: 600, cursor: "pointer" } }, "Cancel"),
           ),
+          h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 6 } }, "Exercises (one per line):"),
+          h("textarea", { value: editExs, onChange: e => setEditExs(e.target.value), rows: 12, placeholder: "Bench Press\nLat Pulldown\nLeg Press", style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 14, resize: "vertical", outline: "none" } }),
         ),
       );
     }
