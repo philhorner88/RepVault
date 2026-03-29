@@ -364,7 +364,35 @@
       return fresh;
     }
     function saveDB(db) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(deepClone(db))); } catch (e) { console.error("Save failed:", e); } }
-    function emptyDB() { return { history: [], blueprints: {}, pbs: {}, settings: { timers: { ...DEFAULT_TIMERS }, audioEnabled: true } }; }
+    function emptyDB() { return { history: [], blueprints: {}, pbs: {}, settings: { timers: { ...DEFAULT_TIMERS }, audioEnabled: true, volumeTargets: { ...DEFAULT_VOLUME_TARGETS }, trainingDays: ["Monday", "Tuesday", "Thursday", "Friday"] } }; }
+
+    // Default weekly volume targets (working sets per muscle group)
+    const DEFAULT_VOLUME_TARGETS = { chest: 16, back: 16, shoulders: 12, quads: 12, hamstrings: 10, glutes: 10, calves: 8, biceps: 8, triceps: 8, core: 8 };
+
+    // Build exercise library from history + blueprints
+    function buildExerciseLibrary(db) {
+      const lib = {}; // pbKey → { name, muscle, isCardio, lastUsed, frequency }
+      // Scan history
+      (db.history || []).forEach(session => {
+        const d = session.date;
+        (session.exercises || []).forEach(ex => {
+          const k = pbKey(ex.name);
+          if (!lib[k]) lib[k] = { name: ex.name, muscle: ex.muscle || detectMuscle(ex.name), isCardio: isCardio(ex.name), lastUsed: d, frequency: 0 };
+          lib[k].frequency++;
+          if (new Date(d) > new Date(lib[k].lastUsed)) { lib[k].lastUsed = d; lib[k].name = ex.name; }
+          if (ex.muscle && ex.muscle !== "other") lib[k].muscle = ex.muscle;
+        });
+      });
+      // Scan blueprints
+      Object.values(db.blueprints || {}).forEach(bp => {
+        (bp.exercises || []).forEach(ex => {
+          const k = pbKey(ex.name);
+          if (!lib[k]) lib[k] = { name: ex.name, muscle: ex.muscle || detectMuscle(ex.name), isCardio: isCardio(ex.name), lastUsed: null, frequency: 0 };
+          if (ex.muscle && ex.muscle !== "other") lib[k].muscle = ex.muscle;
+        });
+      });
+      return lib;
+    }
 
     // --- Crash Recovery ---
     function saveActiveWorkout(wo, phase, clock) {
@@ -470,6 +498,7 @@
         screen === "home" && h(Home),
         screen === "train" && h(Train),
         screen === "blueprints" && h(Blueprints),
+        screen === "build" && h(Build),
         screen === "history" && h(History),
         screen === "analytics" && h(Analytics),
         screen === "settings" && h(Settings),
@@ -494,8 +523,9 @@
       const { screen, setScreen, wo } = useContext(AppCtx);
       const items = [
         { id: "home", icon: "⚡", label: "Home" }, { id: "blueprints", icon: "📋", label: "Plans" },
+        { id: "build", icon: "🔧", label: "Build" },
         { id: "history", icon: "📊", label: "History" }, { id: "analytics", icon: "📈", label: "Stats" },
-        { id: "settings", icon: "⚙️", label: "Settings" },
+        { id: "settings", icon: "⚙️", label: "More" },
       ];
       // Insert training tab when workout is active
       if (wo) items.splice(0, 0, { id: "train", icon: "🔥", label: "Workout", active: true });
@@ -653,7 +683,7 @@
           h("button", { onClick: startQuick, style: { width: "100%", marginTop: 10, background: C.cyan, color: C.bg, border: "none", borderRadius: 10, padding: 14, fontSize: 15, fontWeight: 700, cursor: "pointer" } }, "Load & Start"),
         ),
         // Export
-        h("button", { onClick: () => setScreen("export"), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, color: C.textDim, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "📤 Export AI-Ready Data"),
+        h("button", { onClick: () => setScreen("export"), style: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, color: C.textDim, cursor: "pointer", fontSize: 13, fontWeight: 500, marginTop: 8 } }, "📤 Export AI-Ready Data"),
       );
     }
 
@@ -1719,7 +1749,7 @@
     // SETTINGS
     // ============================================================
     function Settings() {
-      const { db, persist, notify } = useContext(AppCtx);
+      const { db, persist, notify, setScreen } = useContext(AppCtx);
       const t = db.settings?.timers || DEFAULT_TIMERS;
       function upd(k, v) { persist(prev => ({ ...prev, settings: { ...prev.settings, timers: { ...(prev.settings?.timers || DEFAULT_TIMERS), [k]: parseInt(v) || 0 } } })); }
       function clearAll() { if (confirm("This will erase ALL data. Are you sure?")) { persist(emptyDB()); notify("All data cleared", "warn"); } }
@@ -1751,12 +1781,281 @@
         h("button", { onClick: forceUpdate, style: { width: "100%", background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "🔄 Force Update App"),
         h("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", marginBottom: 12 } }, "Clears cache and reloads. Your data is safe."),
         h("button", { onClick: clearAll, style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v16"),
+        h("button", { onClick: () => setScreen("export"), style: { width: "100%", marginTop: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, color: C.textDim, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "📤 Export AI-Ready Data"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v17"),
       );
     }
 
     // ============================================================
     // EXPORT
+
+    // ============================================================
+    // BUILD — Exercise Library, Workout Generator, Volume Forecaster
+    // ============================================================
+    function Build() {
+      const { db, persist, notify, setScreen } = useContext(AppCtx);
+      const [tab, setTab] = useState("forecast"); // "forecast", "generate", "targets"
+      const targets = db.settings?.volumeTargets || DEFAULT_VOLUME_TARGETS;
+      const trainingDays = db.settings?.trainingDays || ["Monday", "Tuesday", "Thursday", "Friday"];
+      const [genDays, setGenDays] = useState(trainingDays);
+      const [generating, setGenerating] = useState(false);
+      const [generatedPlan, setGeneratedPlan] = useState(null);
+
+      // Exercise library
+      const library = useMemo(() => buildExerciseLibrary(db), [db]);
+      const libraryList = useMemo(() => Object.entries(library).sort((a, b) => (b[1].frequency || 0) - (a[1].frequency || 0)), [library]);
+
+      // Volume forecast from current blueprints
+      const forecast = useMemo(() => {
+        const byMuscle = {};
+        let totalSets = 0;
+        trainingDays.forEach(day => {
+          const bp = db.blueprints?.[day];
+          if (!bp?.exercises) return;
+          bp.exercises.forEach(ex => {
+            const m = ex.muscle || detectMuscle(ex.name);
+            const sets = isCardio(ex.name) ? 1 : SETS_PER_EXERCISE;
+            byMuscle[m] = (byMuscle[m] || 0) + sets;
+            totalSets += sets;
+          });
+        });
+        return { byMuscle, totalSets };
+      }, [db.blueprints, trainingDays]);
+
+      // Last week's actual volume
+      const lastWeekActual = useMemo(() => {
+        const mondayStart = thisMonday();
+        const thisWeekSessions = db.history.filter(x => new Date(x.date) >= mondayStart);
+        const byMuscle = {};
+        let totalSets = 0;
+        thisWeekSessions.forEach(session => {
+          (session.exercises || []).forEach(ex => {
+            const m = ex.muscle || detectMuscle(ex.name);
+            const sets = (ex.sets || []).filter(s => s.completed !== false).length;
+            byMuscle[m] = (byMuscle[m] || 0) + sets;
+            totalSets += sets;
+          });
+        });
+        return { byMuscle, totalSets };
+      }, [db.history]);
+
+      function updateTarget(muscle, val) {
+        persist(prev => ({ ...prev, settings: { ...prev.settings, volumeTargets: { ...(prev.settings?.volumeTargets || DEFAULT_VOLUME_TARGETS), [muscle]: parseInt(val) || 0 } } }));
+      }
+
+      function toggleTrainingDay(day) {
+        const current = db.settings?.trainingDays || trainingDays;
+        const next = current.includes(day) ? current.filter(d => d !== day) : [...current, day];
+        persist(prev => ({ ...prev, settings: { ...prev.settings, trainingDays: next } }));
+      }
+
+      // Workout generator
+      function generatePlan() {
+        const activeDays = db.settings?.trainingDays || trainingDays;
+        if (activeDays.length === 0) { notify("Set training days first", "warn"); return; }
+
+        const tgts = db.settings?.volumeTargets || DEFAULT_VOLUME_TARGETS;
+        const setsPerDay = {};
+        activeDays.forEach(d => { setsPerDay[d] = []; });
+
+        // Build pool of exercises per muscle, sorted by recency (least recent first for variety)
+        const pool = {};
+        Object.entries(library).forEach(([k, ex]) => {
+          if (ex.isCardio || ex.muscle === "cardio" || ex.muscle === "other") return;
+          const m = ex.muscle;
+          if (!pool[m]) pool[m] = [];
+          pool[m].push({ ...ex, key: k, daysSince: ex.lastUsed ? Math.floor((Date.now() - new Date(ex.lastUsed).getTime()) / 86400000) : 999 });
+        });
+        // Sort each pool: least recently used first
+        Object.values(pool).forEach(arr => arr.sort((a, b) => b.daysSince - a.daysSince));
+
+        // Distribute sets across days
+        const muscleOrder = Object.entries(tgts).filter(([m, s]) => s > 0).sort((a, b) => b[1] - a[1]);
+        const dayIdx = {};
+        activeDays.forEach((d, i) => { dayIdx[d] = i; });
+
+        muscleOrder.forEach(([muscle, targetSets]) => {
+          const exercises = pool[muscle] || [];
+          if (exercises.length === 0) return;
+          const numExercises = Math.ceil(targetSets / SETS_PER_EXERCISE);
+          for (let i = 0; i < numExercises; i++) {
+            const ex = exercises[i % exercises.length];
+            // Assign to the day with fewest exercises so far (round-robin balance)
+            const bestDay = activeDays.reduce((best, day) => setsPerDay[day].length < setsPerDay[best].length ? day : best, activeDays[0]);
+            setsPerDay[bestDay].push({ name: ex.name, muscle, isCardio: false });
+          }
+        });
+
+        // Build blueprint format
+        const plan = {};
+        activeDays.forEach(day => {
+          const exercises = setsPerDay[day];
+          // Group by muscle for nicer ordering
+          exercises.sort((a, b) => {
+            const order = Object.keys(tgts);
+            return order.indexOf(a.muscle) - order.indexOf(b.muscle);
+          });
+          plan[day] = {
+            name: `Generated – ${day}`,
+            exercises: exercises.map(e => ({ name: e.name, muscle: e.muscle, isCardio: e.isCardio })),
+          };
+        });
+
+        setGeneratedPlan(plan);
+        notify(`Generated ${activeDays.length}-day plan`, "success");
+      }
+
+      function applyPlan() {
+        if (!generatedPlan) return;
+        persist(prev => {
+          const bps = { ...prev.blueprints };
+          Object.entries(generatedPlan).forEach(([day, plan]) => { bps[day] = plan; });
+          return { ...prev, blueprints: bps };
+        });
+        notify("Plan saved to Blueprints!", "success");
+        setGeneratedPlan(null);
+      }
+
+      const allMuscles = Object.keys(DEFAULT_VOLUME_TARGETS);
+
+      return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
+        h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 4 } }, "Build"),
+        h("p", { style: { fontSize: 12, color: C.textDim, marginBottom: 14 } }, `${Object.keys(library).length} exercises in library`),
+
+        // Tab bar
+        h("div", { style: { display: "flex", gap: 4, marginBottom: 16, background: C.surface, borderRadius: 10, padding: 3, border: `1px solid ${C.border}` } },
+          [{ id: "forecast", label: "Forecast" }, { id: "generate", label: "Generate" }, { id: "targets", label: "Targets" }].map(t =>
+            h("button", { key: t.id, onClick: () => setTab(t.id), style: { flex: 1, padding: "9px 0", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", background: tab === t.id ? C.cyan : "transparent", color: tab === t.id ? C.bg : C.textDim } }, t.label)
+          ),
+        ),
+
+        // === FORECAST TAB ===
+        tab === "forecast" && h(Fragment, null,
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
+              h("div", { style: { fontSize: 13, fontWeight: 600 } }, "Weekly Volume Forecast"),
+              h("div", { style: { fontSize: 22, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, `${forecast.totalSets} sets`),
+            ),
+            allMuscles.map(m => {
+              const planned = forecast.byMuscle[m] || 0;
+              const target = targets[m] || 0;
+              const actual = lastWeekActual.byMuscle[m] || 0;
+              const status = target === 0 ? "none" : planned >= target ? "hit" : planned >= target * 0.7 ? "close" : "under";
+              const statusColor = status === "hit" ? C.green : status === "close" ? C.amber : status === "under" ? C.red : C.textDim;
+              const pct = target > 0 ? Math.min(1, planned / target) : 0;
+              return h("div", { key: m, style: { marginBottom: 8 } },
+                h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 } },
+                  h("span", { style: { fontSize: 12, textTransform: "capitalize", color: C.text, fontWeight: 500 } }, m),
+                  h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                    h("span", { style: { fontSize: 11, fontFamily: "'JetBrains Mono'", color: statusColor, fontWeight: 600 } }, `${planned}/${target}`),
+                    actual > 0 && h("span", { style: { fontSize: 9, color: C.textDim } }, `done: ${actual}`),
+                    status !== "none" && h("span", { style: { fontSize: 9, padding: "1px 5px", borderRadius: 8, background: `${statusColor}15`, color: statusColor, fontWeight: 600 } }, status === "hit" ? "✓" : status === "close" ? "~" : "↓"),
+                  ),
+                ),
+                h("div", { style: { height: 4, background: C.border, borderRadius: 2 } },
+                  h("div", { style: { height: "100%", width: `${pct * 100}%`, background: statusColor, borderRadius: 2, transition: "width 0.3s" } }),
+                ),
+              );
+            }),
+          ),
+          // Training days config
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}`, marginBottom: 12 } },
+            h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 10 } }, "Training Days"),
+            h("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } },
+              DAYS.map(d => {
+                const active = trainingDays.includes(d);
+                return h("button", { key: d, onClick: () => toggleTrainingDay(d), style: { padding: "7px 12px", borderRadius: 8, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", background: active ? C.cyan : C.bg, color: active ? C.bg : C.textDim } }, d.slice(0, 3));
+              }),
+            ),
+          ),
+        ),
+
+        // === GENERATE TAB ===
+        tab === "generate" && h(Fragment, null,
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
+            h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, "Workout Generator"),
+            h("p", { style: { fontSize: 12, color: C.textDim, marginBottom: 14, lineHeight: 1.5 } }, `Generates a ${trainingDays.length}-day plan from your exercise library (${Object.keys(library).length} exercises) to hit your volume targets. Prioritises exercises you haven't done recently.`),
+            h("button", { onClick: generatePlan, style: { width: "100%", background: C.cyan, color: C.bg, border: "none", borderRadius: 12, padding: 14, fontSize: 14, fontWeight: 700, cursor: "pointer" } }, "⚡ Generate Plan"),
+          ),
+          // Generated plan preview
+          generatedPlan && h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.green}40`, marginBottom: 12 } },
+            h("div", { style: { fontSize: 13, fontWeight: 600, color: C.green, marginBottom: 12 } }, "Generated Plan"),
+            Object.entries(generatedPlan).map(([day, plan]) =>
+              h("div", { key: day, style: { marginBottom: 10 } },
+                h("div", { style: { fontSize: 12, fontWeight: 700, color: C.cyan, marginBottom: 4 } }, day),
+                h("div", { style: { display: "flex", flexDirection: "column", gap: 2 } },
+                  plan.exercises.map((ex, i) =>
+                    h("div", { key: i, style: { display: "flex", justifyContent: "space-between", padding: "4px 8px", background: C.bg, borderRadius: 6, fontSize: 11 } },
+                      h("span", { style: { color: C.text } }, ex.name),
+                      h("span", { style: { color: C.textDim, textTransform: "capitalize", fontSize: 10 } }, ex.muscle),
+                    )
+                  ),
+                ),
+              )
+            ),
+            // Forecast for generated plan
+            h("div", { style: { marginTop: 10, padding: 10, background: C.bg, borderRadius: 8, border: `1px solid ${C.border}` } },
+              h("div", { style: { fontSize: 10, color: C.textDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 } }, "Projected volume"),
+              (() => {
+                const genForecast = {};
+                Object.values(generatedPlan).forEach(p => p.exercises.forEach(ex => {
+                  const m = ex.muscle || "other";
+                  genForecast[m] = (genForecast[m] || 0) + SETS_PER_EXERCISE;
+                }));
+                return h("div", { style: { display: "flex", flexWrap: "wrap", gap: 4 } },
+                  Object.entries(genForecast).filter(([m]) => m !== "other" && m !== "cardio").map(([m, sets]) => {
+                    const target = targets[m] || 0;
+                    const color = target === 0 ? C.textDim : sets >= target ? C.green : sets >= target * 0.7 ? C.amber : C.red;
+                    return h("span", { key: m, style: { fontSize: 10, padding: "3px 8px", borderRadius: 12, background: `${color}15`, color, fontFamily: "'JetBrains Mono'", fontWeight: 600 } }, `${m}: ${sets}/${target}`);
+                  })
+                );
+              })(),
+            ),
+            h("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
+              h("button", { onClick: applyPlan, style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer", fontSize: 13 } }, "Save to Plans"),
+              h("button", { onClick: generatePlan, style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, fontWeight: 600, cursor: "pointer", fontSize: 13 } }, "Regenerate"),
+            ),
+          ),
+          // Exercise library preview
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
+            h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 10 } }, `Exercise Library (${libraryList.length})`),
+            h("div", { style: { maxHeight: 300, overflowY: "auto" } },
+              libraryList.slice(0, 40).map(([k, ex]) => {
+                const daysSince = ex.lastUsed ? Math.floor((Date.now() - new Date(ex.lastUsed).getTime()) / 86400000) : null;
+                return h("div", { key: k, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 8px", borderBottom: `1px solid ${C.border}30`, fontSize: 11 } },
+                  h("span", { style: { flex: 1, color: C.text } }, ex.name),
+                  h("span", { style: { color: C.textDim, textTransform: "capitalize", fontSize: 10, marginRight: 8 } }, ex.muscle),
+                  daysSince !== null
+                    ? h("span", { style: { fontSize: 9, color: daysSince > 14 ? C.amber : C.textDim } }, `${daysSince}d ago`)
+                    : h("span", { style: { fontSize: 9, color: C.textDim } }, "plan only"),
+                );
+              }),
+              libraryList.length > 40 && h("div", { style: { fontSize: 10, color: C.textDim, padding: 8, textAlign: "center" } }, `+${libraryList.length - 40} more`),
+            ),
+          ),
+        ),
+
+        // === TARGETS TAB ===
+        tab === "targets" && h(Fragment, null,
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
+            h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 14 } }, "Weekly Volume Targets (sets)"),
+            allMuscles.map(m => {
+              const muscleColors = { chest: C.cyan, back: C.green, shoulders: C.amber, glutes: C.purple, quads: C.cyan, hamstrings: C.green, calves: C.amber, biceps: C.cyan, triceps: C.green, core: C.amber };
+              const mc = muscleColors[m] || C.cyan;
+              return h("div", { key: m, style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+                h("span", { style: { fontSize: 13, color: mc, textTransform: "capitalize", fontWeight: 500 } }, m),
+                h("input", { type: "number", inputMode: "numeric", value: targets[m] || 0, onChange: e => updateTarget(m, e.target.value), style: { width: 64, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 10px", color: C.text, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
+              );
+            }),
+          ),
+          h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
+            h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, "Total Weekly Target"),
+            h("div", { style: { fontSize: 28, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, Object.values(targets).reduce((s, v) => s + v, 0), h("span", { style: { fontSize: 14, color: C.textDim, fontWeight: 400, marginLeft: 6 } }, "sets/week")),
+            h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 4 } }, `Across ${trainingDays.length} training days = ~${Math.round(Object.values(targets).reduce((s, v) => s + v, 0) / Math.max(1, trainingDays.length))} sets/session`),
+          ),
+        ),
+      );
+    }
     // ============================================================
     function Export() {
       const { db, setScreen } = useContext(AppCtx);
