@@ -696,6 +696,7 @@
       const [showQuit, setShowQuit] = useState(false);
       const [editingQueueIdx, setEditingQueueIdx] = useState(null);
       const [editingQueueName, setEditingQueueName] = useState("");
+      const [editingCurrentName, setEditingCurrentName] = useState(null); // null = not editing, string = editing
       const [pbOverlay, setPbOverlay] = useState(null); // { name, weight, reps, prevWeight, prevReps }
       const [sessionPBs, setSessionPBs] = useState([]); // PBs achieved this workout
 
@@ -1104,6 +1105,20 @@
         });
       }
 
+      function renameCurrentExercise() {
+        if (!editingCurrentName || !editingCurrentName.trim()) { setEditingCurrentName(null); return; }
+        const newName = editingCurrentName.trim();
+        setWo(prev => {
+          const next = deepClone(prev);
+          next.exercises[next.currentExIdx].name = newName;
+          next.exercises[next.currentExIdx].muscle = detectMuscle(newName);
+          next.exercises[next.currentExIdx].isCardio = isCardio(newName);
+          return next;
+        });
+        setEditingCurrentName(null);
+        notify(`Changed to ${newName}`, "success");
+      }
+
       function addExercise(bulk) {
         if (!addText.trim()) return;
         const lines = bulk ? addText.split("\n").map(l => l.trim()).filter(Boolean) : [addText.trim()];
@@ -1207,9 +1222,20 @@
           ),
           // PB & Last Performance display — shows for current exercise, or upcoming exercise during REST_EX
           statsEx && phase !== PHASES.DONE && !statsEx.isCardio && (curPB || lastPerf) && h("div", { style: { padding: "4px 16px 0" } },
-            // Exercise name + set info
+            // Exercise name + set info — tappable to rename current exercise
             h("div", { style: { marginBottom: 6 } },
-              h("div", { style: { fontSize: 17, fontWeight: 800, letterSpacing: -0.4 } }, phase === PHASES.REST_EX ? (wo.exercises[wo.currentExIdx + 1]?.name || statsEx.name) : statsEx.name),
+              phase !== PHASES.REST_EX && editingCurrentName !== null
+                ? h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                    h("input", { type: "text", value: editingCurrentName, onChange: e => setEditingCurrentName(e.target.value), onKeyDown: e => { if (e.key === "Enter") renameCurrentExercise(); if (e.key === "Escape") setEditingCurrentName(null); }, autoFocus: true, style: { flex: 1, background: C.bg, border: `1px solid ${C.amber}40`, borderRadius: 8, padding: "8px 10px", color: C.text, fontSize: 15, fontWeight: 700, outline: "none" } }),
+                    h("button", { onClick: renameCurrentExercise, style: { background: C.amber, color: C.bg, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0 } }, "✓"),
+                    h("button", { onClick: () => setEditingCurrentName(null), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 8px", color: C.textDim, fontSize: 11, cursor: "pointer", flexShrink: 0 } }, "✕"),
+                  )
+                : h("div", { onClick: () => phase !== PHASES.REST_EX && setEditingCurrentName(curEx.name), style: { cursor: phase !== PHASES.REST_EX ? "pointer" : "default" } },
+                    h("div", { style: { fontSize: 17, fontWeight: 800, letterSpacing: -0.4, display: "flex", alignItems: "center", gap: 6 } },
+                      phase === PHASES.REST_EX ? (wo.exercises[wo.currentExIdx + 1]?.name || statsEx.name) : statsEx.name,
+                      phase !== PHASES.REST_EX && h("span", { style: { fontSize: 11, color: C.textDim, opacity: 0.5 } }, "✏️"),
+                    ),
+                  ),
               h("div", { style: { fontSize: 11, color: C.textDim } }, phase === PHASES.REST_EX ? `Up next • ${wo.exercises[wo.currentExIdx + 1]?.sets.length || 4} sets` : `Set ${wo.currentSetIdx + 1} of ${curEx.sets.length} • ${curEx.muscle}`),
             ),
             h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
@@ -1231,7 +1257,15 @@
           curEx && phase !== PHASES.DONE && !curEx.isCardio && h("div", { style: { padding: "4px 16px" } },
             // Show exercise name if no PB/Last section rendered it
             !(statsEx && !statsEx.isCardio && (curPB || lastPerf)) && h("div", { style: { marginBottom: 6 } },
-              h("div", { style: { fontSize: 17, fontWeight: 800, letterSpacing: -0.4 } }, curEx.name),
+              editingCurrentName !== null
+                ? h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                    h("input", { type: "text", value: editingCurrentName, onChange: e => setEditingCurrentName(e.target.value), onKeyDown: e => { if (e.key === "Enter") renameCurrentExercise(); if (e.key === "Escape") setEditingCurrentName(null); }, autoFocus: true, style: { flex: 1, background: C.bg, border: `1px solid ${C.amber}40`, borderRadius: 8, padding: "8px 10px", color: C.text, fontSize: 15, fontWeight: 700, outline: "none" } }),
+                    h("button", { onClick: renameCurrentExercise, style: { background: C.amber, color: C.bg, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0 } }, "✓"),
+                    h("button", { onClick: () => setEditingCurrentName(null), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 8px", color: C.textDim, fontSize: 11, cursor: "pointer", flexShrink: 0 } }, "✕"),
+                  )
+                : h("div", { onClick: () => setEditingCurrentName(curEx.name), style: { cursor: "pointer" } },
+                    h("div", { style: { fontSize: 17, fontWeight: 800, letterSpacing: -0.4, display: "flex", alignItems: "center", gap: 6 } }, curEx.name, h("span", { style: { fontSize: 11, color: C.textDim, opacity: 0.5 } }, "✏️")),
+                  ),
               h("div", { style: { fontSize: 11, color: C.textDim } }, `Set ${wo.currentSetIdx + 1} of ${curEx.sets.length} • ${curEx.muscle}`),
             ),
             h("div", { style: { background: C.surface, borderRadius: 16, padding: 16, border: `1px solid ${C.border}` } },
@@ -1694,17 +1728,65 @@
         ),
         // Chart — weekly sets
         weeklyData.length > 0 && h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
-          h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 } }, "Weekly Sets"),
-          h("div", { style: { display: "flex", gap: 4, alignItems: "flex-end", height: 120 } },
-            weeklyData.map(([w, d], i) => {
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+            h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1 } }, "Weekly Sets"),
+            h("div", { style: { fontSize: 11, color: C.textDim } }, `${weeklyData.length} weeks`),
+          ),
+          // Grid lines
+          h("div", { style: { position: "relative", height: 140, marginBottom: 4 } },
+            // Horizontal grid lines
+            (() => {
               const max = Math.max(...weeklyData.map(x => x[1].sets), 1);
-              const ht = (d.sets / max) * 100;
-              return h("div", { key: w, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 } },
-                h("div", { style: { fontSize: 9, color: C.textDim } }, d.sets),
-                h("div", { style: { width: "100%", height: `${ht}%`, minHeight: 4, background: i === weeklyData.length - 1 ? C.cyan : C.border, borderRadius: 4 } }),
-                h("div", { style: { fontSize: 9, color: C.textDim } }, new Date(w).toLocaleDateString("en-AU", { day: "numeric", month: "short" })),
+              const gridLines = [0, 0.25, 0.5, 0.75, 1].map(pct => Math.round(max * pct));
+              return h(Fragment, null,
+                gridLines.map((val, gi) =>
+                  h("div", { key: gi, style: { position: "absolute", left: 0, right: 0, bottom: `${(val / max) * 100}%`, borderBottom: gi === 0 ? "none" : `1px solid ${C.border}40`, display: "flex", alignItems: "flex-end" } },
+                    gi > 0 && gi < gridLines.length && h("span", { style: { position: "absolute", left: -2, top: -8, fontSize: 8, color: `${C.textDim}60`, fontFamily: "'JetBrains Mono'" } }, val),
+                  )
+                ),
+              );
+            })(),
+            // Bars
+            h("div", { style: { display: "flex", gap: 6, alignItems: "flex-end", height: "100%", position: "relative", zIndex: 1, paddingLeft: 20 } },
+              weeklyData.map(([w, d], i) => {
+                const max = Math.max(...weeklyData.map(x => x[1].sets), 1);
+                const ht = Math.max(3, (d.sets / max) * 100);
+                const isCurrent = i === weeklyData.length - 1;
+                const isLast = i === weeklyData.length - 2;
+                const barColor = isCurrent ? C.cyan : isLast ? `${C.cyan}60` : `${C.cyan}30`;
+                return h("div", { key: w, style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 0, height: "100%", justifyContent: "flex-end" } },
+                  // Value label
+                  h("div", { style: { fontSize: 10, fontWeight: 600, color: isCurrent ? C.cyan : C.textDim, fontFamily: "'JetBrains Mono'", marginBottom: 3 } }, d.sets),
+                  // Bar
+                  h("div", { style: { width: "100%", maxWidth: 36, height: `${ht}%`, background: isCurrent ? `linear-gradient(180deg, ${C.cyan}, ${C.cyan}80)` : barColor, borderRadius: "4px 4px 2px 2px", transition: "height 0.5s ease", boxShadow: isCurrent ? `0 0 12px ${C.cyan}30` : "none", position: "relative" } },
+                    // Sessions dot indicator
+                    d.sessions > 0 && h("div", { style: { position: "absolute", top: -2, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 2 } },
+                      Array.from({ length: Math.min(d.sessions, 5) }, (_, si) => h("div", { key: si, style: { width: 3, height: 3, borderRadius: "50%", background: isCurrent ? C.green : `${C.green}50` } })),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          ),
+          // Date labels
+          h("div", { style: { display: "flex", gap: 6, paddingLeft: 20 } },
+            weeklyData.map(([w, d], i) => {
+              const isCurrent = i === weeklyData.length - 1;
+              return h("div", { key: w, style: { flex: 1, textAlign: "center", fontSize: 9, color: isCurrent ? C.text : C.textDim, fontWeight: isCurrent ? 600 : 400 } },
+                isCurrent ? "This wk" : new Date(w).toLocaleDateString("en-AU", { day: "numeric", month: "short" }),
               );
             }),
+          ),
+          // Legend
+          h("div", { style: { display: "flex", gap: 12, marginTop: 10, justifyContent: "center" } },
+            h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
+              h("div", { style: { width: 8, height: 8, borderRadius: 2, background: C.cyan } }),
+              h("span", { style: { fontSize: 9, color: C.textDim } }, "Sets"),
+            ),
+            h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
+              h("div", { style: { width: 4, height: 4, borderRadius: "50%", background: C.green } }),
+              h("span", { style: { fontSize: 9, color: C.textDim } }, "Sessions"),
+            ),
           ),
         ),
         // PBs set this week
