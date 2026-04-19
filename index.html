@@ -263,7 +263,7 @@
       return new Date(Date.UTC(aest.getUTCFullYear(), aest.getUTCMonth(), 1) - (10 * 60 * 60 * 1000));
     }
 
-    function deepClone(o) { try { return JSON.parse(JSON.stringify(o, (_, v) => typeof v === "number" && isNaN(v) ? null : v)); } catch { return {}; } }
+    function deepClone(o) { try { return JSON.parse(JSON.stringify(o, (_, v) => typeof v === "number" && isNaN(v) ? null : v)); } catch (e) { console.error("deepClone failed:", e); return o; } }
     function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
     function fmtTime(s) { if (s < 0) s = 0; return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, "0")}`; }
     function fmtDur(s) { const hr = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60); return hr > 0 ? `${hr}h ${m}m` : m > 0 ? `${m}m ${sec}s` : `${sec}s`; }
@@ -362,7 +362,14 @@
       fresh._bpSeeded = true;
       return fresh;
     }
-    function saveDB(db) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(deepClone(db))); } catch (e) { console.error("Save failed:", e); } }
+    function saveDB(db) {
+      try {
+        const clone = deepClone(db);
+        if (!clone || !clone.history) { console.error("saveDB aborted: invalid data"); return false; }
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(clone));
+        return true;
+      } catch (e) { console.error("Save failed:", e); return false; }
+    }
     function emptyDB() { return { history: [], blueprints: {}, pbs: {}, settings: { timers: { ...DEFAULT_TIMERS }, audioEnabled: true, volumeTargets: { ...DEFAULT_VOLUME_TARGETS }, trainingDays: ["Monday", "Tuesday", "Thursday", "Friday"] } }; }
 
     // Default weekly volume targets (working sets per muscle group)
@@ -470,7 +477,12 @@
       function dismissRestore() { clearActiveWorkout(); setShowRestore(false); crashSnap.current = null; }
 
       const persist = useCallback((updater) => {
-        setDb(prev => { const next = typeof updater === "function" ? updater(prev) : updater; saveDB(next); return next; });
+        setDb(prev => {
+          const next = typeof updater === "function" ? updater(prev) : updater;
+          const saved = saveDB(next);
+          if (!saved) { setTimeout(() => setNotif({ msg: "⚠️ Save failed! Your data may not persist.", type: "error", id: Date.now() }), 100); }
+          return next;
+        });
       }, []);
       const notify = useCallback((msg, type = "info") => { setNotif({ msg, type, id: Date.now() }); setTimeout(() => setNotif(null), 2500); }, []);
 
