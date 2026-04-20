@@ -1026,7 +1026,10 @@
         const cleanPBs = deduplicatePBs(newPBs);
         persist(prev => ({ ...prev, history: [...prev.history, session], pbs: cleanPBs }));
         clearActiveWorkout();
-        notify("Workout saved! 💪", "success"); setWo(null); setPhase(PHASES.PREP); setScreen("home");
+        // Store the saved session ID so History can open it in edit mode
+        window._lastSavedSessionId = session.id;
+        notify("Workout saved! Tap to edit if needed.", "success");
+        setWo(null); setPhase(PHASES.PREP); setScreen("history");
       }
 
       function quitWorkout() {
@@ -1193,7 +1196,25 @@
         // === SCROLLABLE CONTENT ===
         h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 90 } },
           // Done screen with PB highlights
-          phase === PHASES.DONE && h("div", { className: "slide-up", style: { padding: "30px 16px" } },
+          phase === PHASES.DONE && (() => {
+            // Rescan ALL exercises for PBs at display time (catches late-entered data)
+            const allSessionPBs = [];
+            wo.exercises.forEach(ex => {
+              if (ex.isCardio) return;
+              const k = pbKey(ex.name);
+              const currentPB = db.pbs?.[k];
+              const bestWeight = Math.max(0, ...ex.sets.map(s => s.weight || 0));
+              const bestRepsAtBestWeight = Math.max(0, ...ex.sets.filter(s => s.weight === bestWeight).map(s => s.reps || 0));
+              if (bestWeight <= 0) return;
+              const prevWeight = currentPB?.maxWeight || 0;
+              const prevReps = currentPB ? (currentPB.repsAtMax != null ? currentPB.repsAtMax : currentPB.maxReps || 0) : 0;
+              const beatWeight = bestWeight > prevWeight;
+              const beatReps = bestWeight >= prevWeight && bestRepsAtBestWeight > prevReps;
+              if (beatWeight || beatReps) {
+                allSessionPBs.push({ name: ex.name, weight: bestWeight, reps: bestRepsAtBestWeight, prevWeight, prevReps, type: beatWeight ? "weight" : "reps" });
+              }
+            });
+            return h("div", { className: "slide-up", style: { padding: "30px 16px" } },
             h("div", { style: { textAlign: "center" } },
               h("div", { style: { fontSize: 48 } }, "🏆"),
               h("h2", { style: { fontSize: 28, fontWeight: 800, color: C.green, marginTop: 12 } }, "Complete!"),
@@ -1205,10 +1226,10 @@
                 h("div", { style: { textAlign: "center" } }, h("div", { style: { fontSize: 20, fontWeight: 700, color: C.amber, fontFamily: "'JetBrains Mono'" } }, wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0) > 1000 ? `${(wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0) / 1000).toFixed(1)}k` : wo.exercises.reduce((s, e) => s + (e.sets || []).reduce((ss, st) => ss + (st.weight || 0) * (st.reps || 0), 0), 0)), h("div", { style: { fontSize: 10, color: C.textDim } }, "Volume (kg)")),
               ),
             ),
-            // Session PBs
-            sessionPBs.length > 0 && h("div", { style: { marginTop: 16, background: `linear-gradient(135deg, rgba(255,200,80,0.06), rgba(255,200,80,0.02))`, borderRadius: 14, padding: 16, border: `1px solid rgba(255,200,80,0.15)`, animation: "pbGlow 3s ease infinite" } },
-              h("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 10, textAlign: "center", fontWeight: 700 } }, `🏆 ${sessionPBs.length} New Personal Best${sessionPBs.length > 1 ? "s" : ""}`),
-              sessionPBs.map((pb, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "rgba(255,200,80,0.06)", borderRadius: 10, marginBottom: 4, border: "1px solid rgba(255,200,80,0.1)" } },
+            // Session PBs (rescanned from all sets)
+            allSessionPBs.length > 0 && h("div", { style: { marginTop: 16, background: `linear-gradient(135deg, rgba(255,200,80,0.06), rgba(255,200,80,0.02))`, borderRadius: 14, padding: 16, border: `1px solid rgba(255,200,80,0.15)`, animation: "pbGlow 3s ease infinite" } },
+              h("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 10, textAlign: "center", fontWeight: 700 } }, `🏆 ${allSessionPBs.length} New Personal Best${allSessionPBs.length > 1 ? "s" : ""}`),
+              allSessionPBs.map((pb, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "rgba(255,200,80,0.06)", borderRadius: 10, marginBottom: 4, border: "1px solid rgba(255,200,80,0.1)" } },
                 h("div", { style: { flex: 1 } },
                   h("div", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, pb.name),
                   h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 2 } }, pb.prevWeight > 0 ? `Previous: ${pb.prevWeight}kg × ${pb.prevReps}` : "First recorded PB"),
@@ -1223,15 +1244,15 @@
             h("div", { style: { marginTop: 16, background: C.surface, borderRadius: 14, padding: 14, border: `1px solid ${C.border}` } },
               wo.exercises.map((ex, i) => {
                 const weights = ex.sets.filter(s => s.weight > 0).map(s => s.weight);
-                const isPB = sessionPBs.some(pb => pbKey(pb.name) === pbKey(ex.name));
+                const isPB = allSessionPBs.some(pb => pbKey(pb.name) === pbKey(ex.name));
                 return h("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: i < wo.exercises.length - 1 ? `1px solid ${C.border}40` : "none" } },
                   h("div", { style: { flex: 1, fontSize: 12, fontWeight: 500, color: isPB ? C.gold : C.textDim } }, isPB ? "🏆 " : "", ex.name),
                   h("div", { style: { fontSize: 11, fontFamily: "'JetBrains Mono'", color: C.textDim } }, weights.length > 0 ? weights.join("·") : ex.isCardio ? `${ex.sets[0]?.duration || 0}m` : "—"),
                 );
               }),
             ),
-            h("button", { onClick: finish, style: { width: "100%", marginTop: 20, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save Workout"),
-          ),
+            h("button", { onClick: finish, style: { width: "100%", marginTop: 20, background: C.green, color: C.bg, border: "none", borderRadius: 12, padding: "16px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer" } }, "Save & Review"),
+          ); })(),
           // PB & Last Performance display — shows for current exercise, or upcoming exercise during REST_EX
           statsEx && phase !== PHASES.DONE && !statsEx.isCardio && (curPB || lastPerf) && h("div", { style: { padding: "4px 16px 0" } },
             // Exercise name + set info — tappable to rename current exercise
@@ -1493,6 +1514,16 @@
       const [confirmDelete, setConfirmDelete] = useState(null);
 
       const sorted = [...db.history].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+      // Auto-open the just-saved session in edit mode
+      useEffect(() => {
+        if (window._lastSavedSessionId) {
+          const sid = window._lastSavedSessionId;
+          window._lastSavedSessionId = null;
+          const session = db.history.find(s => s.id === sid);
+          if (session) { setExpanded(sid); startCorrection(session); }
+        }
+      }, []);
 
       function startCorrection(session) {
         setEditId(session.id);
@@ -1856,22 +1887,88 @@
     // ============================================================
     function Settings() {
       const { db, persist, notify, setScreen } = useContext(AppCtx);
+      const [restoring, setRestoring] = useState(false);
       const t = db.settings?.timers || DEFAULT_TIMERS;
       function upd(k, v) { persist(prev => ({ ...prev, settings: { ...prev.settings, timers: { ...(prev.settings?.timers || DEFAULT_TIMERS), [k]: parseInt(v) || 0 } } })); }
       function clearAll() { if (confirm("This will erase ALL data. Are you sure?")) { persist(emptyDB()); notify("All data cleared", "warn"); } }
       function forceUpdate() {
         if ("serviceWorker" in navigator) {
-          navigator.serviceWorker.getRegistrations().then(regs => {
-            regs.forEach(r => r.unregister());
-          });
-          caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))).then(() => {
-            notify("Cache cleared! Reloading...", "success");
-            setTimeout(() => window.location.reload(true), 500);
-          });
-        } else {
-          window.location.reload(true);
-        }
+          navigator.serviceWorker.getRegistrations().then(regs => { regs.forEach(r => r.unregister()); });
+          caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))).then(() => { notify("Cache cleared! Reloading...", "success"); setTimeout(() => window.location.reload(true), 500); });
+        } else { window.location.reload(true); }
       }
+
+      // Download backup as JSON file
+      function downloadBackup() {
+        const data = JSON.stringify(deepClone(db), null, 2);
+        const blob = new Blob([data], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `repvault-backup-${new Date().toISOString().split("T")[0]}.json`;
+        a.click(); URL.revokeObjectURL(url);
+        notify("Backup downloaded", "success");
+      }
+
+      // Restore from JSON file
+      function handleRestore(e) {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const data = JSON.parse(ev.target.result);
+            // Support both raw DB format and export format
+            const history = data.history || [];
+            const pbs = data.personalBests || data.pbs || {};
+            const blueprints = data.weeklyBlueprints || data.blueprints || {};
+            if (history.length === 0 && Object.keys(pbs).length === 0) { notify("No data found in file", "warn"); return; }
+            // Strip export-only fields from history
+            const cleanHistory = history.map(s => ({
+              id: s.id || genId(), date: s.date, duration: s.duration || 0,
+              exercises: (s.exercises || []).map(ex => ({
+                name: ex.name, muscle: ex.muscle || detectMuscle(ex.name), isCardio: ex.isCardio || isCardio(ex.name),
+                sets: (ex.sets || []).map(st => ({ weight: st.weight || 0, reps: st.reps || 0, duration: st.duration || 0, completed: st.completed !== false })),
+              })),
+            }));
+            const msg = `Restore ${cleanHistory.length} sessions, ${Object.keys(pbs).length} PBs?`;
+            if (!confirm(msg)) return;
+            persist(prev => ({
+              ...prev,
+              history: [...prev.history, ...cleanHistory.filter(h => !prev.history.some(ph => ph.date === h.date))],
+              pbs: { ...pbs, ...prev.pbs }, // Keep existing PBs, add missing ones
+              blueprints: Object.keys(prev.blueprints || {}).length > 0 ? prev.blueprints : blueprints,
+            }));
+            notify(`Restored ${cleanHistory.length} sessions!`, "success");
+          } catch (err) { notify("Invalid backup file: " + err.message, "error"); }
+        };
+        reader.readAsText(file);
+      }
+
+      // Restore from backup.json on server
+      function restoreFromServer() {
+        setRestoring(true);
+        fetch("backup.json").then(r => { if (!r.ok) throw new Error("No backup file found"); return r.json(); }).then(data => {
+          const history = data.history || [];
+          const pbs = data.personalBests || data.pbs || {};
+          const blueprints = data.weeklyBlueprints || data.blueprints || {};
+          const cleanHistory = history.map(s => ({
+            id: s.id || genId(), date: s.date, duration: s.duration || 0,
+            exercises: (s.exercises || []).map(ex => ({
+              name: ex.name, muscle: ex.muscle || detectMuscle(ex.name), isCardio: ex.isCardio || isCardio(ex.name),
+              sets: (ex.sets || []).map(st => ({ weight: st.weight || 0, reps: st.reps || 0, duration: st.duration || 0, completed: st.completed !== false })),
+            })),
+          }));
+          persist(prev => ({
+            ...prev,
+            history: [...prev.history, ...cleanHistory.filter(h => !prev.history.some(ph => ph.date === h.date))],
+            pbs: { ...pbs, ...prev.pbs },
+            blueprints: Object.keys(prev.blueprints || {}).length > 0 ? prev.blueprints : blueprints,
+          }));
+          notify(`Restored ${cleanHistory.length} sessions from backup!`, "success");
+          setRestoring(false);
+        }).catch(err => { notify("Restore failed: " + err.message, "error"); setRestoring(false); });
+      }
+
       const fields = [{ key: "prep", label: "Prep Timer", color: C.amber }, { key: "work", label: "Work Timer", color: C.cyan }, { key: "restSet", label: "Rest (Set)", color: C.green }, { key: "restEx", label: "Rest (Exercise)", color: C.purple }];
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
@@ -1883,7 +1980,19 @@
             h("input", { type: "number", value: t[f.key], onChange: e => upd(f.key, e.target.value), style: { width: 80, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.text, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none" } }),
           )),
         ),
-        // Force update button
+        // Backup & Restore
+        h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
+          h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 12 } }, "Backup & Restore"),
+          h("div", { style: { fontSize: 11, color: C.textDim, marginBottom: 12 } }, `${db.history.length} sessions • ${Object.keys(db.pbs || {}).length} PBs stored`),
+          h("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
+            h("button", { onClick: downloadBackup, style: { flex: 1, background: C.bg, border: `1px solid ${C.green}30`, borderRadius: 10, padding: 12, color: C.green, cursor: "pointer", fontSize: 12, fontWeight: 600 } }, "⬇️ Download Backup"),
+            h("label", { style: { flex: 1, background: C.bg, border: `1px solid ${C.cyan}30`, borderRadius: 10, padding: 12, color: C.cyan, cursor: "pointer", fontSize: 12, fontWeight: 600, textAlign: "center" } },
+              "⬆️ Restore from File",
+              h("input", { type: "file", accept: ".json", onChange: handleRestore, style: { display: "none" } }),
+            ),
+          ),
+          h("button", { onClick: restoreFromServer, disabled: restoring, style: { width: "100%", background: C.bg, border: `1px solid ${C.amber}30`, borderRadius: 10, padding: 12, color: C.amber, cursor: "pointer", fontSize: 12, fontWeight: 600, opacity: restoring ? 0.5 : 1 } }, restoring ? "Restoring..." : "🔄 Restore from Server Backup"),
+        ),
         h("button", { onClick: forceUpdate, style: { width: "100%", background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "🔄 Force Update App"),
         h("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", marginBottom: 12 } }, "Clears cache and reloads. Your data is safe."),
         h("button", { onClick: clearAll, style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data"),
