@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -7,20 +6,17 @@
   <title>RepVault</title>
 
   <!-- PWA Meta -->
-
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#0a0a0f">
   <meta name="background-color" content="#0a0a0f">
 
   <!-- iOS PWA Meta -->
-
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="RepVault">
   <link rel="apple-touch-icon" href="icon-192.png">
 
   <!-- Fonts -->
-
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -47,15 +43,12 @@
     .fade-in { animation: fadeIn 0.3s ease-out; }
     .slide-up { animation: slideUp 0.4s ease-out; }
   </style>
-
 </head>
 <body>
   <div id="root"></div>
 
   <!-- React via CDN -->
-
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 
   <script>
@@ -1024,6 +1017,19 @@
           newPBs[k] = b;
         });
         const cleanPBs = deduplicatePBs(newPBs);
+        // Double-save: write directly to localStorage FIRST (bypasses React batching)
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            const directDB = JSON.parse(raw);
+            if (directDB.history && !directDB.history.some(s => s.id === session.id)) {
+              directDB.history.push(session);
+              directDB.pbs = cleanPBs;
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(directDB));
+            }
+          }
+        } catch (e) { console.error("Direct save failed:", e); }
+        // Then update React state (which also saves)
         persist(prev => ({ ...prev, history: [...prev.history, session], pbs: cleanPBs }));
         clearActiveWorkout();
         // Store the saved session ID so History can open it in edit mode
@@ -1890,7 +1896,11 @@
       const [restoring, setRestoring] = useState(false);
       const t = db.settings?.timers || DEFAULT_TIMERS;
       function upd(k, v) { persist(prev => ({ ...prev, settings: { ...prev.settings, timers: { ...(prev.settings?.timers || DEFAULT_TIMERS), [k]: parseInt(v) || 0 } } })); }
-      function clearAll() { if (confirm("This will erase ALL data. Are you sure?")) { persist(emptyDB()); notify("All data cleared", "warn"); } }
+      const [showClearConfirm, setShowClearConfirm] = useState(false);
+      const [clearConfirmText, setClearConfirmText] = useState("");
+      function clearAll() {
+        if (clearConfirmText === "DELETE") { persist(emptyDB()); notify("All data cleared", "warn"); setShowClearConfirm(false); setClearConfirmText(""); }
+      }
       function forceUpdate() {
         if ("serviceWorker" in navigator) {
           navigator.serviceWorker.getRegistrations().then(regs => { regs.forEach(r => r.unregister()); });
@@ -1995,9 +2005,53 @@
         ),
         h("button", { onClick: forceUpdate, style: { width: "100%", background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "🔄 Force Update App"),
         h("div", { style: { fontSize: 10, color: C.textDim, textAlign: "center", marginBottom: 12 } }, "Clears cache and reloads. Your data is safe."),
-        h("button", { onClick: clearAll, style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data"),
+        !showClearConfirm
+          ? h("button", { onClick: () => setShowClearConfirm(true), style: { width: "100%", background: C.surface, border: `1px solid ${C.red}30`, borderRadius: 12, padding: 14, color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600 } }, "⚠️ Clear All Data")
+          : h("div", { style: { background: C.surface, border: `1px solid ${C.red}40`, borderRadius: 12, padding: 16, marginBottom: 8 } },
+              h("div", { style: { fontSize: 13, color: C.red, fontWeight: 700, marginBottom: 8 } }, "⚠️ This will erase ALL workout history, PBs, and blueprints."),
+              h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 10 } }, `Type DELETE to confirm (${db.history.length} sessions will be lost)`),
+              h("input", { type: "text", value: clearConfirmText, onChange: e => setClearConfirmText(e.target.value.toUpperCase()), placeholder: "Type DELETE", autoComplete: "off", style: { width: "100%", background: C.bg, border: `1px solid ${C.red}30`, borderRadius: 8, padding: "10px 12px", color: C.red, fontSize: 14, fontFamily: "'JetBrains Mono'", textAlign: "center", outline: "none", marginBottom: 10 } }),
+              h("div", { style: { display: "flex", gap: 8 } },
+                h("button", { onClick: clearAll, disabled: clearConfirmText !== "DELETE", style: { flex: 1, background: clearConfirmText === "DELETE" ? C.red : C.bg, color: clearConfirmText === "DELETE" ? "#fff" : C.textDim, border: `1px solid ${C.red}30`, borderRadius: 10, padding: 12, fontWeight: 700, cursor: clearConfirmText === "DELETE" ? "pointer" : "not-allowed", fontSize: 13, opacity: clearConfirmText === "DELETE" ? 1 : 0.4 } }, "Erase Everything"),
+                h("button", { onClick: () => { setShowClearConfirm(false); setClearConfirmText(""); }, style: { flex: 1, background: C.bg, color: C.textDim, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, fontWeight: 600, cursor: "pointer", fontSize: 13 } }, "Cancel"),
+              ),
+            ),
         h("button", { onClick: () => setScreen("export"), style: { width: "100%", marginTop: 8, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, color: C.textDim, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "📤 Export AI-Ready Data"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v17"),
+        // Session diagnostic
+        h("button", { onClick: () => {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) { notify("No data in localStorage", "warn"); return; }
+          const parsed = JSON.parse(raw);
+          const sessions = parsed.history || [];
+          const sorted = [...sessions].sort((a, b) => new Date(b.date) - new Date(a.date));
+          const lines = sorted.slice(0, 10).map((s, i) => {
+            const d = new Date(s.date);
+            const valid = !isNaN(d.getTime());
+            return `${i+1}. ${valid ? d.toLocaleDateString("en-AU", { weekday: "short", month: "short", day: "numeric" }) : "INVALID DATE"} | id=${s.id ? "✓" : "MISSING"} | ${(s.exercises||[]).length} exercises | dur=${Math.round((s.duration||0)/60)}min`;
+          });
+          alert(`${sessions.length} sessions in localStorage (last 10):\n\n${lines.join("\n")}\n\nReact state: ${db.history.length} sessions`);
+        }, style: { width: "100%", marginTop: 8, background: C.surface, border: `1px solid ${C.purple}30`, borderRadius: 12, padding: 14, color: C.purple, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🔍 Diagnose Sessions"),
+        // Rescue orphaned sessions (localStorage has more than React state)
+        h("button", { onClick: () => {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) { notify("No data in localStorage", "warn"); return; }
+          const parsed = JSON.parse(raw);
+          const lsHistory = parsed.history || [];
+          const stateIds = new Set(db.history.map(s => s.id).filter(Boolean));
+          const stateDates = new Set(db.history.map(s => s.date));
+          const orphans = lsHistory.filter(s => !stateIds.has(s.id) && !stateDates.has(s.date));
+          if (orphans.length === 0) {
+            if (lsHistory.length > db.history.length) {
+              // localStorage has more sessions — reload from it
+              notify(`Reloading ${lsHistory.length} sessions from storage...`, "success");
+              persist(() => parsed);
+            } else { notify("No orphaned sessions found", "info"); }
+            return;
+          }
+          persist(prev => ({ ...prev, history: [...prev.history, ...orphans] }));
+          notify(`Rescued ${orphans.length} session(s)!`, "success");
+        }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.green}30`, borderRadius: 12, padding: 14, color: C.green, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🛟 Rescue Lost Sessions"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v18"),
       );
     }
 
@@ -2331,6 +2385,5 @@
       });
     }
   </script>
-
 </body>
 </html>
