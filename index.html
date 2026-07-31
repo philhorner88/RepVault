@@ -635,9 +635,9 @@
         }));
       }
 
-      function startBP(bp) { setWo({ id: genId(), exercises: makeExercises(bp.exercises.map(e => e.name)), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
-      function startQuick() { if (!quickText.trim()) return; const lines = quickText.split("\n").map(l => l.trim()).filter(Boolean); setWo({ id: genId(), exercises: makeExercises(lines), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify(`Loaded ${lines.length} exercises`, "success"); }
-      function startEmpty() { setWo({ id: genId(), exercises: [], currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
+      function startBP(bp) { switchGym("Saint Haven"); setWo({ id: genId(), gym: "Saint Haven", exercises: makeExercises(bp.exercises.map(e => e.name)), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
+      function startQuick() { if (!quickText.trim()) return; const lines = quickText.split("\n").map(l => l.trim()).filter(Boolean); switchGym("Saint Haven"); setWo({ id: genId(), gym: "Saint Haven", exercises: makeExercises(lines), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify(`Loaded ${lines.length} exercises`, "success"); }
+      function startEmpty() { switchGym("Saint Haven"); setWo({ id: genId(), gym: "Saint Haven", exercises: [], currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
         // Header
@@ -727,7 +727,7 @@
     // TRAINING SCREEN
     // ============================================================
     function Train() {
-      const { db, persist, notify, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock } = useContext(AppCtx);
+      const { db, persist, notify, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock , switchGym } = useContext(AppCtx);
       const [showAdd, setShowAdd] = useState(false);
       const [addText, setAddText] = useState("");
       const [showQuit, setShowQuit] = useState(false);
@@ -1045,7 +1045,7 @@
             completed: phase === PHASES.DONE ? true : s.completed
           }))
         }));
-        const session = { id: currentWo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - currentWo.startTime) / 1000), gym: db.activeGym || "Saint Haven", exercises: finalExercises };
+        const session = { id: currentWo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - currentWo.startTime) / 1000), gym: currentWo.gym || db.activeGym || "Saint Haven", exercises: finalExercises };
         const newPBs = { ...(db.pbs || {}) };
         session.exercises.forEach(ex => {
           const k = pbKey(ex.name);
@@ -1218,6 +1218,17 @@
           ),
           // Progress bar
           h("div", { style: { height: 3, background: C.border } }, h("div", { style: { height: "100%", width: `${prog * 100}%`, background: C.green, transition: "width 0.5s" } })),
+          // Gym picker — tap to reallocate this workout to a different gym
+          h("div", { style: { display: "flex", gap: 5, padding: "6px 16px 0", justifyContent: "center" } },
+            (db.gyms || ["Saint Haven", "Mt Martha", "Other"]).map(g => {
+              const active = (wo.gym || db.activeGym || "Saint Haven") === g;
+              return h("button", { key: g, onClick: () => { if (!active) { switchGym(g); setWo(prev => ({ ...prev, gym: g })); notify(`Workout at ${g} — PBs switched`, "success"); } }, style: {
+                padding: "4px 10px", borderRadius: 14, fontSize: 10, fontWeight: active ? 700 : 400, cursor: "pointer",
+                background: active ? `${C.cyan}15` : "none", color: active ? C.cyan : C.textDim,
+                border: `1px solid ${active ? C.cyan + "40" : C.border}`,
+              } }, `📍 ${g}`);
+            }),
+          ),
           // RING TIMER — always dominant
           h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", padding: "16px 0 8px", position: "relative" } },
             h("div", { style: { position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, ${glow}08 0%, transparent 60%)`, pointerEvents: "none" } }),
@@ -1474,7 +1485,7 @@
       );
     }
     function Blueprints() {
-      const { db, persist, notify, setWo, setScreen } = useContext(AppCtx);
+      const { db, persist, notify, setWo, setScreen, switchGym } = useContext(AppCtx);
       const [day, setDay] = useState(DAYS[0]);
       const [editName, setEditName] = useState("");
       const [editing, setEditing] = useState(false);
@@ -1515,7 +1526,7 @@
       function load() {
         if (!bp?.exercises?.length) return;
         const exs = bp.exercises.map(e => ({ id: genId(), name: e.name, muscle: e.muscle || detectMuscle(e.name), isCardio: isCardio(e.name), sets: isCardio(e.name) ? [{ id: genId(), duration: e.duration || 0, completed: false }] : Array.from({ length: SETS_PER_EXERCISE }, () => ({ id: genId(), weight: 0, reps: 0, completed: false })) }));
-        setWo({ id: genId(), exercises: exs, currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify("Blueprint loaded!", "success");
+        switchGym("Saint Haven"); setWo({ id: genId(), gym: "Saint Haven", exercises: exs, currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify("Blueprint loaded!", "success");
       }
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
