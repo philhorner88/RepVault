@@ -483,6 +483,10 @@
 
     function updateMedia(title, artist) { if ("mediaSession" in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: "RepVault" }); } catch {} } }
 
+    // Module-scope mirror of the active workout. Plain mutable object so it can
+    // never fall out of scope between components (App writes, Train reads).
+    const woRef = { current: null };
+
     const AppCtx = createContext(null);
 
     // --- Ring Timer SVG Component ---
@@ -504,7 +508,6 @@
       const [db, setDb] = useState(() => loadDB());
       const [screen, setScreen] = useState("home");
       const [wo, setWo] = useState(null);
-      const woRef = useRef(null);
       useEffect(() => { woRef.current = wo; }, [wo]);
       const [notif, setNotif] = useState(null);
       const [phase, setPhase] = useState(PHASES.PREP);
@@ -923,7 +926,7 @@
         if (!wo) { clearActiveWorkout(); return; }
         saveActiveWorkout(wo, phase, Math.floor((Date.now() - wo.startTime) / 1000));
         saveIntervalRef.current = setInterval(() => {
-          const latest = woRef.current || wo;
+          const latest = woRef?.current || wo;
           saveActiveWorkout(latest, phase, Math.floor((Date.now() - latest.startTime) / 1000));
         }, 3000);
         return () => clearInterval(saveIntervalRef.current);
@@ -1095,7 +1098,7 @@
       function finish() {
         try {
         // Always read from ref to get latest state (avoids React batching stale closures)
-        const currentWo = woRef.current || wo;
+        const currentWo = woRef?.current || wo;
         // When finishing from DONE phase, all sets were completed — ensure they're marked
         const finalExercises = currentWo.exercises.map(e => ({
           name: e.name, muscle: e.muscle, isCardio: e.isCardio,
@@ -1141,7 +1144,7 @@
         setWo(null); setPhase(PHASES.PREP); setScreen("history");
         } catch (err) {
           // Save failed — stash the raw workout so nothing is lost, and show WHY
-          try { localStorage.setItem("repvault_emergency_save", JSON.stringify({ wo: woRef.current || wo, error: String(err), at: new Date().toISOString() })); } catch {}
+          try { localStorage.setItem("repvault_emergency_save", JSON.stringify({ wo: woRef?.current || wo, error: String(err), at: new Date().toISOString() })); } catch {}
           alert("Save error: " + (err?.message || err) + "\n\nYour workout has been stashed in emergency storage — tell Claude this error message.");
         }
       }
