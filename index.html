@@ -202,6 +202,8 @@
       [/\bbicep curl\b/g, "curl"], [/\bbiceps curl\b/g, "curl"],
       [/\b(ez[- ]?bar|ez)\b/g, "ez"],
     ];
+    function gymCode(g) { return g === "Saint Haven" ? "SH" : g === "Mt Martha" ? "MM" : g === "Other" ? "OT" : (g || "SH").slice(0, 2).toUpperCase(); }
+
     function pbKey(name) {
       let n = normaliseName(name);
       // Apply synonym compression
@@ -341,6 +343,34 @@
           if (!parsed.pbsByGym) { parsed.pbsByGym = { [parsed.activeGym]: parsed.pbs || {} }; changed = true; }
           // Invariant: db.pbs always mirrors the active gym's PB map
           parsed.pbs = parsed.pbsByGym[parsed.activeGym] || {};
+          // One-time manual injection: 26 May session that failed to save (from DONE screen)
+          if (!(parsed.history || []).some(s => s.id === "manual-rescue-20260526")) {
+            const mk = (w) => ({ weight: w, reps: 0, duration: 0, completed: true });
+            const bw = () => ({ weight: 0, reps: 0, duration: 0, completed: true });
+            parsed.history = parsed.history || [];
+            parsed.history.push({
+              id: "manual-rescue-20260526",
+              date: new Date().toISOString(),
+              duration: 2006, // 33m 26s
+              gym: "Saint Haven",
+              exercises: [
+                { name: "Single leg calf raise (Smith machine)", muscle: "calves", isCardio: false, sets: [mk(40), mk(40), mk(40), mk(40)] },
+                { name: "SL pogo", muscle: "other", isCardio: false, sets: [bw(), bw(), bw(), bw()] },
+                { name: "Cable hip adduction", muscle: "other", isCardio: false, sets: [mk(10), mk(10), mk(10), mk(10)] },
+                { name: "Seated calf raise", muscle: "calves", isCardio: false, sets: [mk(40), mk(40), mk(40), mk(45)] },
+                { name: "Single leg leg press acceleration", muscle: "quads", isCardio: false, sets: [{ weight: 40, reps: 16, duration: 0, completed: true }, mk(40), mk(40), mk(40)] },
+                { name: "Split stance pogos", muscle: "other", isCardio: false, sets: [bw(), bw(), bw(), bw()] },
+                { name: "Skater jumps", muscle: "other", isCardio: false, sets: [bw(), bw(), bw(), bw()] },
+              ],
+            });
+            // Record the PB it detected
+            const pk = pbKey("Single leg leg press acceleration");
+            if (!parsed.pbs[pk] || 40 > (parsed.pbs[pk].maxWeight || 0)) {
+              parsed.pbs[pk] = { maxWeight: 40, maxReps: 16, repsAtMax: 16, maxVolume: 640, _displayName: "Single leg leg press acceleration" };
+              parsed.pbsByGym[parsed.activeGym] = parsed.pbs;
+            }
+            changed = true;
+          }
           if (changed) saveDB(parsed);
           return parsed;
         }
@@ -635,9 +665,9 @@
         }));
       }
 
-      function startBP(bp) { switchGym("Saint Haven"); setWo({ id: genId(), gym: "Saint Haven", exercises: makeExercises(bp.exercises.map(e => e.name)), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
-      function startQuick() { if (!quickText.trim()) return; const lines = quickText.split("\n").map(l => l.trim()).filter(Boolean); switchGym("Saint Haven"); setWo({ id: genId(), gym: "Saint Haven", exercises: makeExercises(lines), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify(`Loaded ${lines.length} exercises`, "success"); }
-      function startEmpty() { switchGym("Saint Haven"); setWo({ id: genId(), gym: "Saint Haven", exercises: [], currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
+      function startBP(bp) { setWo({ id: genId(), exercises: makeExercises(bp.exercises.map(e => e.name)), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
+      function startQuick() { if (!quickText.trim()) return; const lines = quickText.split("\n").map(l => l.trim()).filter(Boolean); setWo({ id: genId(), exercises: makeExercises(lines), currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify(`Loaded ${lines.length} exercises`, "success"); }
+      function startEmpty() { setWo({ id: genId(), exercises: [], currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); }
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
         // Header
@@ -795,7 +825,7 @@
           }
           return null;
         };
-        // Prefer same-gym history; fall back to any gym
+        // Prefer same-gym history; fall back to any gym (labelled with its gym code)
         return findIn(true) || findIn(false);
       }, [statsEx?.name, db.history, db.activeGym]);;
 
@@ -861,6 +891,8 @@
 
       // --- CRASH RECOVERY: auto-save workout state every 3s + on state change ---
       const saveIntervalRef = useRef(null);
+      // Hold the timer while the gym question is open
+      useEffect(() => { if (wo && !wo.gymChosen) setPaused(true); }, [wo?.gymChosen]);
       useEffect(() => {
         if (!wo) { clearActiveWorkout(); return; }
         saveActiveWorkout(wo, phase, Math.floor((Date.now() - wo.startTime) / 1000));
@@ -1035,6 +1067,7 @@
       }
 
       function finish() {
+        try {
         // Always read from ref to get latest state (avoids React batching stale closures)
         const currentWo = woRef.current || wo;
         // When finishing from DONE phase, all sets were completed — ensure they're marked
@@ -1080,6 +1113,11 @@
         window._lastSavedSessionId = session.id;
         notify("Workout saved! Tap to edit if needed.", "success");
         setWo(null); setPhase(PHASES.PREP); setScreen("history");
+        } catch (err) {
+          // Save failed — stash the raw workout so nothing is lost, and show WHY
+          try { localStorage.setItem("repvault_emergency_save", JSON.stringify({ wo: woRef.current || wo, error: String(err), at: new Date().toISOString() })); } catch {}
+          alert("Save error: " + (err?.message || err) + "\n\nYour workout has been stashed in emergency storage — tell Claude this error message.");
+        }
       }
 
       function quitWorkout() {
@@ -1204,6 +1242,24 @@
       const timerTotal = phase === PHASES.PREP ? timers.prep : phase === PHASES.WORK ? timers.work : phase === PHASES.REST_SET ? timers.restSet : phase === PHASES.REST_EX ? timers.restEx : 0;
 
       return h("div", { style: { minHeight: "100vh", background: C.bg, maxWidth: 500, margin: "0 auto", display: "flex", flexDirection: "column" } },
+        // Gym question — asked once at the start of every workout
+        wo && !wo.gymChosen && h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", zIndex: 250, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+          h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 20, padding: 28, width: "100%", maxWidth: 340, border: `1px solid ${C.cyan}30`, textAlign: "center" } },
+            h("div", { style: { fontSize: 30, marginBottom: 10 } }, "📍"),
+            h("div", { style: { fontSize: 17, fontWeight: 700, marginBottom: 4 } }, "Where are you training?"),
+            h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 18 } }, "PBs and previous weights are tracked per gym"),
+            (db.gyms || ["Saint Haven", "Mt Martha", "Other"]).map(g => h("button", {
+              key: g,
+              onClick: () => { switchGym(g); setWo(prev => ({ ...prev, gym: g, gymChosen: true, startTime: Date.now() })); setPaused(false); },
+              style: {
+                width: "100%", padding: 14, marginBottom: 8, borderRadius: 12, cursor: "pointer",
+                background: g === "Saint Haven" ? `${C.cyan}15` : C.bg,
+                border: `1px solid ${g === "Saint Haven" ? C.cyan + "50" : C.border}`,
+                color: g === "Saint Haven" ? C.cyan : C.text, fontSize: 15, fontWeight: g === "Saint Haven" ? 700 : 500,
+              },
+            }, g === "Saint Haven" ? `${g} (usual)` : g)),
+          ),
+        ),
         // === TRAINING UI ===
         phase !== PHASES.DONE && curEx && h(Fragment, null,
           // Status bar
@@ -1218,17 +1274,6 @@
           ),
           // Progress bar
           h("div", { style: { height: 3, background: C.border } }, h("div", { style: { height: "100%", width: `${prog * 100}%`, background: C.green, transition: "width 0.5s" } })),
-          // Gym picker — tap to reallocate this workout to a different gym
-          h("div", { style: { display: "flex", gap: 5, padding: "6px 16px 0", justifyContent: "center" } },
-            (db.gyms || ["Saint Haven", "Mt Martha", "Other"]).map(g => {
-              const active = (wo.gym || db.activeGym || "Saint Haven") === g;
-              return h("button", { key: g, onClick: () => { if (!active) { switchGym(g); setWo(prev => ({ ...prev, gym: g })); notify(`Workout at ${g} — PBs switched`, "success"); } }, style: {
-                padding: "4px 10px", borderRadius: 14, fontSize: 10, fontWeight: active ? 700 : 400, cursor: "pointer",
-                background: active ? `${C.cyan}15` : "none", color: active ? C.cyan : C.textDim,
-                border: `1px solid ${active ? C.cyan + "40" : C.border}`,
-              } }, `📍 ${g}`);
-            }),
-          ),
           // RING TIMER — always dominant
           h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", padding: "16px 0 8px", position: "relative" } },
             h("div", { style: { position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 40%, ${glow}08 0%, transparent 60%)`, pointerEvents: "none" } }),
@@ -1340,8 +1385,8 @@
                 h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 1 } }, `Vol: ${curPB.maxVolume}kg`),
               ),
               lastPerf && h("div", { style: { flex: 1, background: `${C.cyan}10`, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.cyan}30` } },
-                h("div", { style: { fontSize: 10, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, "📅 Last Session"),
-                h("div", { style: { fontSize: 18, color: C.text, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${lastPerf.maxWeight}kg`),
+                h("div", { style: { fontSize: 10, color: C.cyan, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 } }, `📅 Last Session${lastPerf.gym !== (db.activeGym || "Saint Haven") ? ` (${gymCode(lastPerf.gym)})` : ""}`),
+                h("div", { style: { fontSize: 18, color: lastPerf.gym !== (db.activeGym || "Saint Haven") ? C.amber : C.text, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${lastPerf.maxWeight}kg`),
                 h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, new Date(lastPerf.date).toLocaleDateString("en-GB", { day: "numeric", month: "short" })),
                 h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 1 } }, lastPerf.sets.map((s, i) => `${s.weight}×${s.reps}`).join(" · ")),
               ),
@@ -1526,7 +1571,7 @@
       function load() {
         if (!bp?.exercises?.length) return;
         const exs = bp.exercises.map(e => ({ id: genId(), name: e.name, muscle: e.muscle || detectMuscle(e.name), isCardio: isCardio(e.name), sets: isCardio(e.name) ? [{ id: genId(), duration: e.duration || 0, completed: false }] : Array.from({ length: SETS_PER_EXERCISE }, () => ({ id: genId(), weight: 0, reps: 0, completed: false })) }));
-        switchGym("Saint Haven"); setWo({ id: genId(), gym: "Saint Haven", exercises: exs, currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify("Blueprint loaded!", "success");
+        setWo({ id: genId(), exercises: exs, currentExIdx: 0, currentSetIdx: 0, startTime: Date.now() }); setScreen("train"); notify("Blueprint loaded!", "success");
       }
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
@@ -1671,7 +1716,7 @@
             h("button", { onClick: () => { if (!isEditing) setExpanded(isExp ? null : x.id); }, style: { width: "100%", background: "none", border: "none", color: C.text, padding: "14px 16px", cursor: "pointer", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center" } },
               h("div", null,
                 h("div", { style: { fontSize: 14, fontWeight: 600 } }, new Date(x.date).toLocaleDateString("en-AU", { weekday: "short", month: "short", day: "numeric" })),
-                h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `${x.gym ? x.gym + " • " : ""}${muscles.join(", ")} • ${fmtDur(x.duration || 0)}`),
+                h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `${x.gym ? gymCode(x.gym) + " • " : ""}${muscles.join(", ")} • ${fmtDur(x.duration || 0)}`),
               ),
               h("div", { style: { textAlign: "right" } },
                 h("div", { style: { fontSize: 16, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, vol > 1000 ? `${(vol / 1000).toFixed(1)}k` : vol),
