@@ -65,8 +65,24 @@
     const CRASH_KEY = "repvault_active_workout";
 
     // Muscle groups — order matters: more specific phrases checked first
-    const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "cardio"];
+    const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "plyometric", "cardio"];
     const MUSCLE_RULES = [
+      // Plyometric / reactive work (checked first)
+      { phrase: "pogo", group: "plyometric" },
+      { phrase: "drop catch", group: "plyometric" },
+      { phrase: "skater jump", group: "plyometric" },
+      { phrase: "skater hop", group: "plyometric" },
+      { phrase: "split stance pogo", group: "plyometric" },
+      { phrase: "bulgarian split hop", group: "plyometric" },
+      { phrase: "split hop", group: "plyometric" },
+      { phrase: "box jump", group: "plyometric" },
+      { phrase: "broad jump", group: "plyometric" },
+      { phrase: "depth jump", group: "plyometric" },
+      { phrase: "bound", group: "plyometric" },
+      { phrase: "hop", group: "plyometric" },
+      { phrase: "jump squat", group: "plyometric" },
+      { phrase: "jump lunge", group: "plyometric" },
+      { phrase: "plyo", group: "plyometric" },
       // Multi-word phrases first (most specific wins)
       { phrase: "chest supported row", group: "back" },
       { phrase: "chest-supported row", group: "back" },
@@ -370,6 +386,16 @@
               parsed.pbsByGym[parsed.activeGym] = parsed.pbs;
             }
             changed = true;
+          }
+          // One-time: re-tag existing "other" exercises that are actually plyometric
+          if (!parsed._plyoMigrated) {
+            (parsed.history || []).forEach(s => (s.exercises || []).forEach(ex => {
+              if ((ex.muscle === "other" || !ex.muscle) && detectMuscle(ex.name) === "plyometric") ex.muscle = "plyometric";
+            }));
+            Object.values(parsed.blueprints || {}).forEach(bp => (bp.exercises || []).forEach(ex => {
+              if ((ex.muscle === "other" || !ex.muscle) && detectMuscle(ex.name) === "plyometric") ex.muscle = "plyometric";
+            }));
+            parsed._plyoMigrated = true; changed = true;
           }
           if (changed) saveDB(parsed);
           return parsed;
@@ -709,7 +735,7 @@
             muscleSets.map(([muscle, count]) => {
               const maxSets = muscleSets[0]?.[1] || 1;
               const intensity = Math.max(0.3, count / maxSets);
-              const muscleColors = { chest: C.cyan, back: C.green, shoulders: C.amber, glutes: C.purple, quads: C.cyan, hamstrings: C.green, calves: C.amber, biceps: C.cyan, triceps: C.green, core: C.amber };
+              const muscleColors = { chest: C.cyan, back: C.green, shoulders: C.amber, glutes: C.purple, quads: C.cyan, hamstrings: C.green, calves: C.amber, biceps: C.cyan, triceps: C.green, core: C.amber, plyometric: C.pink || "#ff6b9d" };
               const mc = muscleColors[muscle] || C.cyan;
               return h("div", { key: muscle, style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: `${mc}${Math.round(intensity * 20).toString(16).padStart(2, "0")}`, border: `1px solid ${mc}30`, borderRadius: 10, minWidth: "calc(50% - 3px)" } },
                 h("div", { style: { flex: 1 } },
@@ -2409,7 +2435,7 @@
           h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
             h("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 14 } }, "Weekly Volume Targets (sets)"),
             allMuscles.map(m => {
-              const muscleColors = { chest: C.cyan, back: C.green, shoulders: C.amber, glutes: C.purple, quads: C.cyan, hamstrings: C.green, calves: C.amber, biceps: C.cyan, triceps: C.green, core: C.amber };
+              const muscleColors = { chest: C.cyan, back: C.green, shoulders: C.amber, glutes: C.purple, quads: C.cyan, hamstrings: C.green, calves: C.amber, biceps: C.cyan, triceps: C.green, core: C.amber, plyometric: C.pink || "#ff6b9d" };
               const mc = muscleColors[m] || C.cyan;
               return h("div", { key: m, style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
                 h("span", { style: { fontSize: 13, color: mc, textTransform: "capitalize", fontWeight: 500 } }, m),
