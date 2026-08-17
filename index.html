@@ -301,6 +301,15 @@
       "cable chest fly": { maxWeight: 27, maxReps: 10, maxVolume: 905, repsAtMax: 10 },
       "incline fly": { maxWeight: 20, maxReps: 8, maxVolume: 334, repsAtMax: 8 },
     };
+    function fmtClock(d) { return new Date(d).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" }).toLowerCase().replace(/\s/g, ""); }
+    // Start/end for a session. Uses explicit fields when present, otherwise derives
+    // from date (the save moment) minus duration — works for all legacy sessions.
+    function sessionTimes(x) {
+      const end = x.endTime ? new Date(x.endTime) : new Date(x.date);
+      const start = x.startTime ? new Date(x.startTime) : new Date(end.getTime() - (x.duration || 0) * 1000);
+      return { start, end };
+    }
+
     function mkBPEx(name) { return { name, muscle: detectMuscle(name), isCardio: isCardio(name) }; }
     const SEED_BLUEPRINTS = {
       Monday: { name: "Workout A – Upper Emphasis", exercises: [
@@ -652,18 +661,19 @@
           (session.exercises || []).forEach(ex => {
             const muscle = ex.muscle || detectMuscle(ex.name);
             if (muscle && muscle !== "cardio") {
-              counts[muscle] = (counts[muscle] || 0) + (ex.sets || []).filter(s => s.completed !== false).length;
+              counts[muscle] = (counts[muscle] || 0) + (ex.sets || []).length;
             }
           });
         });
         return Object.entries(counts).sort((a, b) => b[1] - a[1]);
       }, [filteredHistory]);
 
-      // Total working sets — count ALL completed sets including rehab
+      // Total working sets — every set that exists, regardless of the completed flag.
+      // Sets skipped past mid-workout keep completed:false but were still performed.
       const totalWorkingSets = useMemo(() => {
         return filteredHistory.reduce((total, session) =>
           total + (session.exercises || []).reduce((exTotal, ex) =>
-            exTotal + (ex.sets || []).filter(s => s.completed !== false).length, 0), 0);
+            exTotal + (ex.sets || []).length, 0), 0);
       }, [filteredHistory]);
 
       // PBs achieved this week
@@ -1107,7 +1117,7 @@
             completed: phase === PHASES.DONE ? true : s.completed
           }))
         }));
-        const session = { id: currentWo.id, date: new Date().toISOString(), duration: Math.floor((Date.now() - currentWo.startTime) / 1000), gym: currentWo.gym || db.activeGym || "Saint Haven", exercises: finalExercises };
+        const session = { id: currentWo.id, date: new Date().toISOString(), startTime: new Date(currentWo.startTime).toISOString(), endTime: new Date().toISOString(), duration: Math.floor((Date.now() - currentWo.startTime) / 1000), gym: currentWo.gym || db.activeGym || "Saint Haven", exercises: finalExercises };
         const newPBs = { ...(db.pbs || {}) };
         session.exercises.forEach(ex => {
           const k = pbKey(ex.name);
@@ -1746,6 +1756,7 @@
               h("div", null,
                 h("div", { style: { fontSize: 14, fontWeight: 600 } }, new Date(x.date).toLocaleDateString("en-AU", { weekday: "short", month: "short", day: "numeric" })),
                 h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 2 } }, `${x.gym ? gymCode(x.gym) + " • " : ""}${muscles.join(", ")} • ${fmtDur(x.duration || 0)}`),
+                (() => { const t = sessionTimes(x); return h("div", { style: { fontSize: 11, color: C.cyan, marginTop: 3, fontFamily: "'JetBrains Mono'" } }, `🕐 ${fmtClock(t.start)} → ${fmtClock(t.end)}`); })(),
               ),
               h("div", { style: { textAlign: "right" } },
                 h("div", { style: { fontSize: 16, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono'" } }, vol > 1000 ? `${(vol / 1000).toFixed(1)}k` : vol),
@@ -1845,7 +1856,7 @@
           const k = mon.toISOString().split("T")[0];
           if (!weeks[k]) weeks[k] = { sessions: 0, sets: 0 };
           weeks[k].sessions++;
-          (x.exercises || []).forEach(ex => { weeks[k].sets += (ex.sets || []).filter(s => s.completed !== false).length; });
+          (x.exercises || []).forEach(ex => { weeks[k].sets += (ex.sets || []).length; });
         });
         return Object.entries(weeks).sort((a, b) => a[0].localeCompare(b[0])).slice(-8);
       }, [db.history]);
@@ -2180,7 +2191,7 @@
           persist(prev => ({ ...prev, history: [...prev.history, ...orphans] }));
           notify(`Rescued ${orphans.length} session(s)!`, "success");
         }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.green}30`, borderRadius: 12, padding: 14, color: C.green, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🛟 Rescue Lost Sessions"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v19"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v21"),
       );
     }
 
@@ -2229,7 +2240,7 @@
         thisWeekSessions.forEach(session => {
           (session.exercises || []).forEach(ex => {
             const m = ex.muscle || detectMuscle(ex.name);
-            const sets = (ex.sets || []).filter(s => s.completed !== false).length;
+            const sets = (ex.sets || []).length;
             byMuscle[m] = (byMuscle[m] || 0) + sets;
             totalSets += sets;
           });
