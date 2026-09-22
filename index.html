@@ -218,6 +218,108 @@
       [/\bbicep curl\b/g, "curl"], [/\bbiceps curl\b/g, "curl"],
       [/\b(ez[- ]?bar|ez)\b/g, "ez"],
     ];
+    // Order-independent match key. "DB Chest Press" and "Chest DB Press" collapse
+    // to the same value, so near-duplicates can be caught before they're created.
+    const MATCH_FILLER = ["machine", "exercise", "the", "a", "with", "using", "both", "each", "reps", "rep", "set", "sets", "x"];
+    function matchKey(name) {
+      let n = pbKey(name);
+      n = n.replace(/[^a-z0-9\s]/g, " ");              // hyphens/punctuation -> space
+      n = n.replace(/\b\d+\s*x\s*\d+\b/g, " ");        // strip "3 x 8" style suffixes
+      n = n.replace(/\b\d+\b/g, " ");                   // strip bare numbers
+      const toks = n.split(/\s+/)
+        .map(t => t.length > 3 && t.endsWith("s") && !t.endsWith("ss") ? t.slice(0, -1) : t) // rows -> row
+        .filter(t => t && !MATCH_FILLER.includes(t));
+      return [...new Set(toks)].sort().join(" ");       // dedupe + sort = order independent
+    }
+    // Existing library entries that look like the same movement as `name`.
+    // Exact matchKey hits first, then high-overlap partials.
+    function findSimilar(name, library, limit = 4) {
+      const raw = (name || "").trim();
+      if (raw.length < 3) return [];
+      const k = matchKey(raw);
+      if (!k) return [];
+      const kt = new Set(k.split(" "));
+      const out = [];
+      Object.values(library || {}).forEach(entry => {
+        if (!entry?.name) return;
+        if (entry.name.trim().toLowerCase() === raw.toLowerCase()) return; // already identical
+        const ek = matchKey(entry.name);
+        if (!ek) return;
+        if (ek === k) { out.push({ ...entry, score: 1 }); return; }
+        const et = new Set(ek.split(" "));
+        let shared = 0; kt.forEach(t => { if (et.has(t)) shared++; });
+        const score = shared / Math.max(kt.size, et.size);
+        if (score >= 0.6) out.push({ ...entry, score });
+      });
+      return out.sort((a, b) => b.score - a.score || (b.frequency || 0) - (a.frequency || 0)).slice(0, limit);
+    }
+
+    // Plan a name merge across history, blueprints and PBs.
+    // EXACT matchKey only — no fuzzy matching, so merged names are genuinely the same movement.
+    // Identical except for case, punctuation, spacing or word order — no words differ.
+    function strictKey(name) {
+      const toks = (name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter(Boolean);
+      return [...new Set(toks)].sort().join(" ");
+    }
+
+    function planNameMerge(db) {
+      const groups = {}; // matchKey -> { names: {name: count}, lastUsed }
+      const note = (name, count, date) => {
+        if (!name) return;
+        const k = matchKey(name);
+        if (!k) return;
+        if (!groups[k]) groups[k] = { names: {}, lastUsed: null };
+        groups[k].names[name] = (groups[k].names[name] || 0) + count;
+        if (date && (!groups[k].lastUsed || new Date(date) > new Date(groups[k].lastUsed))) groups[k].lastUsed = date;
+      };
+      (db.history || []).forEach(s => (s.exercises || []).forEach(ex => note(ex.name, 1, s.date)));
+      Object.values(db.blueprints || {}).forEach(bp => (bp.exercises || []).forEach(ex => note(ex.name, 0, null)));
+      Object.values(db.pbs || {}).forEach(pb => note(pb._displayName, 0, null));
+
+      const plan = [];
+      Object.values(groups).forEach(g => {
+        const variants = Object.keys(g.names);
+        if (variants.length < 2) return; // nothing to merge
+        // Canonical = most-used, tie-break on longest (more descriptive)
+        const paren = s => (/\([^)]*\)/.test(s) ? 1 : 0);
+        const canonical = variants.slice().sort((a, b) =>
+          (paren(a) - paren(b)) ||               // plain names beat qualified ones
+          (g.names[b] - g.names[a]) ||           // then most used
+          (a.trim().length - b.trim().length) || // then shortest
+          a.localeCompare(b))[0].trim();
+        const sk = strictKey(canonical);
+        const safe = variants.every(v => strictKey(v) === sk);
+        plan.push({
+          canonical,
+          safe,
+          variants: variants.filter(v => v.trim() !== canonical)
+            .map(v => ({ name: v, count: g.names[v], safe: strictKey(v) === sk }))
+            .sort((a, b) => (b.safe - a.safe) || (b.count - a.count)),
+          totalSessions: variants.reduce((t, v) => t + g.names[v], 0),
+        });
+      });
+      return plan.sort((a, b) => (b.safe - a.safe) || (b.totalSessions - a.totalSessions));
+    }
+
+    // Apply a plan: rewrite names in history + blueprints, then re-dedupe PBs.
+    function applyNameMerge(db, plan) {
+      const map = {}; // oldName -> canonical (only variants explicitly included)
+      plan.forEach(p => p.variants.forEach(v => { if (v.include) map[v.name] = p.canonical; }));
+      const next = deepClone(db);
+      let renamed = 0;
+      (next.history || []).forEach(s => (s.exercises || []).forEach(ex => {
+        if (map[ex.name]) { ex.name = map[ex.name]; renamed++; }
+      }));
+      Object.values(next.blueprints || {}).forEach(bp => (bp.exercises || []).forEach(ex => {
+        if (map[ex.name]) ex.name = map[ex.name];
+      }));
+      next.pbs = deduplicatePBs(next.pbs || {});
+      if (next.activeGym) {
+        next.pbsByGym = { ...(next.pbsByGym || {}), [next.activeGym]: next.pbs };
+      }
+      return { db: next, renamed };
+    }
+
     const RATINGS = [
       { v: 1, label: "Poor",   color: "#ff5252" },
       { v: 2, label: "Flat",   color: "#ff9800" },
@@ -817,6 +919,14 @@
       const [sessionPBs, setSessionPBs] = useState([]); // PBs achieved this workout
       const [rating, setRating] = useState(null); // 1-5 performance self-rating
       const [note, setNote] = useState(""); // free-text comment
+
+      // Exercise library + live near-duplicate suggestions for the Add box
+      const library = useMemo(() => buildExerciseLibrary(db), [db.history, db.blueprints]);
+      const addSuggestions = useMemo(() => {
+        const lines = (addText || "").split("\n");
+        const last = (lines[lines.length - 1] || "").trim();
+        return findSimilar(last, library);
+      }, [addText, library]);
 
       const timerRef = useRef(null);
       const clockRef = useRef(null);
@@ -1598,6 +1708,24 @@
           h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 20, padding: 24, width: "100%", maxWidth: 400, border: `1px solid ${C.border}` } },
             h("h3", { style: { fontSize: 16, fontWeight: 700, marginBottom: 12 } }, "Add Exercises"),
             h("textarea", { value: addText, onChange: e => setAddText(e.target.value), placeholder: "Exercise name\n(one per line for bulk)", rows: 4, autoFocus: true, style: { width: "100%", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12, color: C.text, fontSize: 14, resize: "none", outline: "none" } }),
+            // Near-duplicate guard — tap to reuse the existing name instead of creating a variant
+            addSuggestions.length > 0 && h("div", { style: { marginTop: 10, background: `${C.amber}10`, border: `1px solid ${C.amber}30`, borderRadius: 10, padding: 10 } },
+              h("div", { style: { fontSize: 10, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 7, fontWeight: 700 } }, "⚠️ Already in your library"),
+              addSuggestions.map((s, i) => h("button", {
+                key: i,
+                onClick: () => {
+                  const lines = (addText || "").split("\n");
+                  lines[lines.length - 1] = s.name;
+                  setAddText(lines.join("\n"));
+                },
+                style: { width: "100%", textAlign: "left", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 11px", marginBottom: 5, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 },
+              },
+                h("span", { style: { flex: 1, fontSize: 13, color: C.text, fontWeight: 600 } }, s.name),
+                s.frequency > 0 && h("span", { style: { fontSize: 10, color: C.textDim, fontFamily: "'JetBrains Mono'", flexShrink: 0 } }, `${s.frequency}×`),
+                h("span", { style: { fontSize: 10, color: C.cyan, flexShrink: 0 } }, "use this"),
+              )),
+              h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 2 } }, "Tap to reuse, or keep typing to add as new."),
+            ),
             h("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
               h("button", { onClick: () => addExercise(false), style: { flex: 1, background: C.cyan, color: C.bg, border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer" } }, "Single"),
               h("button", { onClick: () => addExercise(true), style: { flex: 1, background: C.green, color: C.bg, border: "none", borderRadius: 10, padding: 12, fontWeight: 700, cursor: "pointer" } }, "Bulk"),
@@ -1953,6 +2081,7 @@
     function Analytics() {
       const { db, persist, notify } = useContext(AppCtx);
       const [editingPB, setEditingPB] = useState(null);
+      const [mergePlan, setMergePlan] = useState(null); // null = modal closed
       const [pbWeight, setPbWeight] = useState(0);
       const [pbReps, setPbReps] = useState(0);
 
@@ -1997,9 +2126,28 @@
       }, [db.history, db.pbs]);
 
       function runDedup() {
-        const deduped = deduplicatePBs(db.pbs || {});
-        persist(prev => ({ ...prev, pbs: deduped }));
-        notify(`Cleaned up PBs: ${Object.keys(db.pbs || {}).length} → ${Object.keys(deduped).length}`, "success");
+        const p = planNameMerge(db).map(g => ({ ...g, variants: g.variants.map(v => ({ ...v, include: v.safe })) }));
+        if (p.length === 0) { notify("No duplicate names found", "info"); return; }
+        setMergePlan(p);
+      }
+
+      function toggleVariant(gi, vi) {
+        setMergePlan(prev => prev.map((g, i) => i !== gi ? g : ({
+          ...g, variants: g.variants.map((v, j) => j !== vi ? v : ({ ...v, include: !v.include })),
+        })));
+      }
+      function setAllVariants(on) {
+        setMergePlan(prev => prev.map(g => ({ ...g, variants: g.variants.map(v => ({ ...v, include: on })) })));
+      }
+
+      function confirmMerge() {
+        const chosen = (mergePlan || []).filter(g => g.variants.some(v => v.include));
+        const count = chosen.reduce((t, g) => t + g.variants.filter(v => v.include).length, 0);
+        if (count === 0) { notify("Nothing selected", "warn"); return; }
+        const { db: merged, renamed } = applyNameMerge(db, chosen);
+        persist(() => merged);
+        setMergePlan(null);
+        notify(`Merged ${count} name(s) across ${renamed} entries`, "success");
       }
 
       function startEditPB(name, pb) { setEditingPB(name); setPbWeight(pb.maxWeight); setPbReps((pb.repsAtMax != null ? pb.repsAtMax : pb.maxReps)); }
@@ -2014,6 +2162,42 @@
 
       return h("div", { className: "fade-in", style: { padding: "20px 16px", maxWidth: 500, margin: "0 auto", paddingBottom: 90 } },
         h("h2", { style: { fontSize: 22, fontWeight: 800, marginBottom: 16 } }, "Analytics"),
+        // Merge preview — lists exactly what will be renamed, tick per variant
+        mergePlan && h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "flex-end", justifyContent: "center" }, onClick: e => { if (e.target === e.currentTarget) setMergePlan(null); } },
+          h("div", { className: "slide-up", style: { background: C.surface, borderRadius: "20px 20px 0 0", width: "100%", maxWidth: 500, maxHeight: "88vh", display: "flex", flexDirection: "column", border: `1px solid ${C.border}` } },
+            h("div", { style: { padding: "18px 16px 10px", borderBottom: `1px solid ${C.border}` } },
+              h("div", { style: { fontSize: 17, fontWeight: 800 } }, "Merge duplicate names"),
+              h("div", { style: { fontSize: 11, color: C.textDim, marginTop: 4, lineHeight: 1.5 } }, "Renames matching exercises across your whole history, blueprints and PBs. Ticked rows are identical apart from case, spacing or word order. Untick anything you want kept separate."),
+              h("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
+                h("button", { onClick: () => setAllVariants(true), style: { flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, color: C.textDim, fontSize: 11, cursor: "pointer" } }, "Select all"),
+                h("button", { onClick: () => setAllVariants(false), style: { flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, color: C.textDim, fontSize: 11, cursor: "pointer" } }, "Select none"),
+              ),
+            ),
+            h("div", { style: { overflowY: "auto", padding: "10px 16px", flex: 1 } },
+              mergePlan.map((g, gi) => h("div", { key: gi, style: { marginBottom: 12, background: C.bg, borderRadius: 10, padding: 10, border: `1px solid ${g.safe ? C.border : C.amber + "40"}` } },
+                h("div", { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 6 } },
+                  h("span", { style: { fontSize: 9, color: C.green, textTransform: "uppercase", letterSpacing: 1, fontWeight: 700, flexShrink: 0 } }, "Keep"),
+                  h("span", { style: { fontSize: 13, fontWeight: 700, color: C.text } }, g.canonical),
+                  !g.safe && h("span", { style: { fontSize: 9, color: C.amber, marginLeft: "auto", flexShrink: 0 } }, "⚠️ check"),
+                ),
+                g.variants.map((v, vi) => h("button", {
+                  key: vi,
+                  onClick: () => toggleVariant(gi, vi),
+                  style: { width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", padding: "5px 0", cursor: "pointer" },
+                },
+                  h("span", { style: { width: 17, height: 17, borderRadius: 4, flexShrink: 0, border: `1.5px solid ${v.include ? C.green : C.border}`, background: v.include ? C.green : "none", color: C.bg, fontSize: 11, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center" } }, v.include ? "✓" : ""),
+                  h("span", { style: { flex: 1, fontSize: 12, color: v.include ? C.textDim : C.border, textDecoration: v.include ? "line-through" : "none" } }, v.name),
+                  !v.safe && h("span", { style: { fontSize: 9, color: C.amber, flexShrink: 0 } }, "differs"),
+                  v.count > 0 && h("span", { style: { fontSize: 10, color: C.textDim, fontFamily: "'JetBrains Mono'", flexShrink: 0 } }, `${v.count}\u00d7`),
+                )),
+              )),
+            ),
+            h("div", { style: { padding: 16, borderTop: `1px solid ${C.border}`, display: "flex", gap: 8 } },
+              h("button", { onClick: () => setMergePlan(null), style: { flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10, padding: 13, color: C.textDim, fontWeight: 600, cursor: "pointer", fontSize: 13 } }, "Cancel"),
+              h("button", { onClick: confirmMerge, style: { flex: 2, background: C.green, color: C.bg, border: "none", borderRadius: 10, padding: 13, fontWeight: 700, cursor: "pointer", fontSize: 13 } }, `Merge ${mergePlan.reduce((t, g) => t + g.variants.filter(v => v.include).length, 0)} name(s)`),
+            ),
+          ),
+        ),
         // Weekly summary
         h("div", { style: { background: C.surface, borderRadius: 16, padding: 20, border: `1px solid ${C.border}`, marginBottom: 12 } },
           h("div", { style: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, "This Week"),
@@ -2299,7 +2483,7 @@
           persist(prev => ({ ...prev, history: [...prev.history, ...orphans] }));
           notify(`Rescued ${orphans.length} session(s)!`, "success");
         }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.green}30`, borderRadius: 12, padding: 14, color: C.green, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🛟 Rescue Lost Sessions"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v24"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v26"),
       );
     }
 
