@@ -67,6 +67,16 @@
     // Muscle groups — order matters: more specific phrases checked first
     const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "plyometric", "cardio"];
     const MUSCLE_RULES = [
+      // Specific overrides — must precede the generic rules below, since the first
+      // match wins and words like "press" or "raise" would otherwise capture these.
+      { phrase: "pallof", group: "core" },
+      { phrase: "anti-rotation", group: "core" },
+      { phrase: "anti rotation", group: "core" },
+      { phrase: "antirotation", group: "core" },
+      { phrase: "hip adduction", group: "glutes" },
+      { phrase: "hip adductor", group: "glutes" },
+      { phrase: "adduction", group: "glutes" },
+      { phrase: "adductor", group: "glutes" },
       // Plyometric / reactive work (checked first)
       { phrase: "pogo", group: "plyometric" },
       { phrase: "drop catch", group: "plyometric" },
@@ -518,6 +528,18 @@
             }));
             parsed._plyoMigrated = true; changed = true;
           }
+          // One-time: re-tag Pallof (was caught by the "press"->chest rule) and
+          // hip adduction (had no rule at all). Narrow — only these name patterns.
+          if (!parsed._pallofAdductMigrated) {
+            const retag = ex => {
+              const l = (ex.name || "").toLowerCase();
+              if (/pallof|anti[- ]?rotation/.test(l)) ex.muscle = "core";
+              else if (/adduction|adductor/.test(l)) ex.muscle = "glutes";
+            };
+            (parsed.history || []).forEach(s => (s.exercises || []).forEach(retag));
+            Object.values(parsed.blueprints || {}).forEach(bp => (bp.exercises || []).forEach(retag));
+            parsed._pallofAdductMigrated = true; changed = true;
+          }
           if (changed) saveDB(parsed);
           return parsed;
         }
@@ -922,6 +944,14 @@
 
       // Exercise library + live near-duplicate suggestions for the Add box
       const library = useMemo(() => buildExerciseLibrary(db), [db.history, db.blueprints]);
+      // Same near-duplicate guard, but for the mid-workout rename field.
+      // Excludes the exercise's own current name so it doesn't suggest itself.
+      const renameSuggestions = useMemo(() => {
+        if (editingCurrentName === null) return [];
+        const cur = wo?.exercises?.[wo.currentExIdx]?.name;
+        return findSimilar(editingCurrentName, library, 6).filter(s => s.name !== cur).slice(0, 3);
+      }, [editingCurrentName, library, wo?.currentExIdx]);
+
       const addSuggestions = useMemo(() => {
         const lines = (addText || "").split("\n");
         const last = (lines[lines.length - 1] || "").trim();
@@ -1581,10 +1611,24 @@
             // Exercise name + set info — tappable to rename current exercise
             h("div", { style: { marginBottom: 6 } },
               phase !== PHASES.REST_EX && editingCurrentName !== null
-                ? h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-                    h("input", { type: "text", value: editingCurrentName, onChange: e => setEditingCurrentName(e.target.value), onKeyDown: e => { if (e.key === "Enter") renameCurrentExercise(); if (e.key === "Escape") setEditingCurrentName(null); }, autoFocus: true, style: { flex: 1, background: C.bg, border: `1px solid ${C.amber}40`, borderRadius: 8, padding: "8px 10px", color: C.text, fontSize: 15, fontWeight: 700, outline: "none" } }),
-                    h("button", { onClick: renameCurrentExercise, style: { background: C.amber, color: C.bg, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0 } }, "✓"),
-                    h("button", { onClick: () => setEditingCurrentName(null), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 8px", color: C.textDim, fontSize: 11, cursor: "pointer", flexShrink: 0 } }, "✕"),
+                ? h("div", null,
+                    h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                      h("input", { type: "text", value: editingCurrentName, onChange: e => setEditingCurrentName(e.target.value), onKeyDown: e => { if (e.key === "Enter") renameCurrentExercise(); if (e.key === "Escape") setEditingCurrentName(null); }, autoFocus: true, style: { flex: 1, background: C.bg, border: `1px solid ${C.amber}40`, borderRadius: 8, padding: "8px 10px", color: C.text, fontSize: 15, fontWeight: 700, outline: "none" } }),
+                      h("button", { onClick: renameCurrentExercise, style: { background: C.amber, color: C.bg, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0 } }, "✓"),
+                      h("button", { onClick: () => setEditingCurrentName(null), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 8px", color: C.textDim, fontSize: 11, cursor: "pointer", flexShrink: 0 } }, "✕"),
+                    ),
+                    renameSuggestions.length > 0 && h("div", { style: { marginTop: 6, background: `${C.amber}10`, border: `1px solid ${C.amber}30`, borderRadius: 8, padding: 8 } },
+                      h("div", { style: { fontSize: 9, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 5, fontWeight: 700 } }, "⚠️ Already in your library"),
+                      renameSuggestions.map((s, i) => h("button", {
+                        key: i,
+                        onClick: () => setEditingCurrentName(s.name),
+                        style: { width: "100%", textAlign: "left", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 9px", marginBottom: 4, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 },
+                      },
+                        h("span", { style: { flex: 1, fontSize: 12, color: C.text, fontWeight: 600 } }, s.name),
+                        s.frequency > 0 && h("span", { style: { fontSize: 9, color: C.textDim, fontFamily: "'JetBrains Mono'", flexShrink: 0 } }, `${s.frequency}\u00d7`),
+                        h("span", { style: { fontSize: 9, color: C.cyan, flexShrink: 0 } }, "use this"),
+                      )),
+                    ),
                   )
                 : h("div", { onClick: () => phase !== PHASES.REST_EX && setEditingCurrentName(curEx.name), style: { cursor: phase !== PHASES.REST_EX ? "pointer" : "default" } },
                     h("div", { style: { fontSize: 17, fontWeight: 800, letterSpacing: -0.4, display: "flex", alignItems: "center", gap: 6 } },
@@ -1614,10 +1658,24 @@
             // Show exercise name if no PB/Last section rendered it
             !(statsEx && !statsEx.isCardio && (curPB || lastPerf)) && h("div", { style: { marginBottom: 6 } },
               editingCurrentName !== null
-                ? h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
-                    h("input", { type: "text", value: editingCurrentName, onChange: e => setEditingCurrentName(e.target.value), onKeyDown: e => { if (e.key === "Enter") renameCurrentExercise(); if (e.key === "Escape") setEditingCurrentName(null); }, autoFocus: true, style: { flex: 1, background: C.bg, border: `1px solid ${C.amber}40`, borderRadius: 8, padding: "8px 10px", color: C.text, fontSize: 15, fontWeight: 700, outline: "none" } }),
-                    h("button", { onClick: renameCurrentExercise, style: { background: C.amber, color: C.bg, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0 } }, "✓"),
-                    h("button", { onClick: () => setEditingCurrentName(null), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 8px", color: C.textDim, fontSize: 11, cursor: "pointer", flexShrink: 0 } }, "✕"),
+                ? h("div", null,
+                    h("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                      h("input", { type: "text", value: editingCurrentName, onChange: e => setEditingCurrentName(e.target.value), onKeyDown: e => { if (e.key === "Enter") renameCurrentExercise(); if (e.key === "Escape") setEditingCurrentName(null); }, autoFocus: true, style: { flex: 1, background: C.bg, border: `1px solid ${C.amber}40`, borderRadius: 8, padding: "8px 10px", color: C.text, fontSize: 15, fontWeight: 700, outline: "none" } }),
+                      h("button", { onClick: renameCurrentExercise, style: { background: C.amber, color: C.bg, border: "none", borderRadius: 8, padding: "8px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", flexShrink: 0 } }, "✓"),
+                      h("button", { onClick: () => setEditingCurrentName(null), style: { background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 8px", color: C.textDim, fontSize: 11, cursor: "pointer", flexShrink: 0 } }, "✕"),
+                    ),
+                    renameSuggestions.length > 0 && h("div", { style: { marginTop: 6, background: `${C.amber}10`, border: `1px solid ${C.amber}30`, borderRadius: 8, padding: 8 } },
+                      h("div", { style: { fontSize: 9, color: C.amber, textTransform: "uppercase", letterSpacing: 1, marginBottom: 5, fontWeight: 700 } }, "⚠️ Already in your library"),
+                      renameSuggestions.map((s, i) => h("button", {
+                        key: i,
+                        onClick: () => setEditingCurrentName(s.name),
+                        style: { width: "100%", textAlign: "left", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: "7px 9px", marginBottom: 4, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 },
+                      },
+                        h("span", { style: { flex: 1, fontSize: 12, color: C.text, fontWeight: 600 } }, s.name),
+                        s.frequency > 0 && h("span", { style: { fontSize: 9, color: C.textDim, fontFamily: "'JetBrains Mono'", flexShrink: 0 } }, `${s.frequency}\u00d7`),
+                        h("span", { style: { fontSize: 9, color: C.cyan, flexShrink: 0 } }, "use this"),
+                      )),
+                    ),
                   )
                 : h("div", { onClick: () => setEditingCurrentName(curEx.name), style: { cursor: "pointer" } },
                     h("div", { style: { fontSize: 17, fontWeight: 800, letterSpacing: -0.4, display: "flex", alignItems: "center", gap: 6 } }, curEx.name, h("span", { style: { fontSize: 11, color: C.textDim, opacity: 0.5 } }, "✏️")),
@@ -2483,7 +2541,7 @@
           persist(prev => ({ ...prev, history: [...prev.history, ...orphans] }));
           notify(`Rescued ${orphans.length} session(s)!`, "success");
         }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.green}30`, borderRadius: 12, padding: 14, color: C.green, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🛟 Rescue Lost Sessions"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v26"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v28"),
       );
     }
 
