@@ -63,6 +63,7 @@
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
     const CRASH_KEY = "repvault_active_workout";
+    const APP_VERSION = "v33";
 
     // Muscle groups — order matters: more specific phrases checked first
     const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "plyometric", "cardio"];
@@ -600,13 +601,15 @@
 
     // --- Crash Recovery ---
     function saveActiveWorkout(wo, phase, clock) {
-      if (!wo) { clearActiveWorkout(); return; }
+      if (!wo) { clearActiveWorkout("save called with no workout"); return; }
       try { localStorage.setItem(CRASH_KEY, JSON.stringify({ wo: deepClone(wo), phase, clock, savedAt: Date.now() })); } catch (e) { console.error("Crash save failed:", e); }
     }
     function loadActiveWorkout() {
-      try { const d = localStorage.getItem(CRASH_KEY); if (!d) return null; const snap = JSON.parse(d); if (Date.now() - snap.savedAt > 12 * 60 * 60 * 1000) { clearActiveWorkout(); return null; } return snap; } catch { return null; }
+      try { const d = localStorage.getItem(CRASH_KEY); if (!d) return null; const snap = JSON.parse(d); if (Date.now() - snap.savedAt > 12 * 60 * 60 * 1000) { clearActiveWorkout("older than 12 hours"); return null; } return snap; } catch { return null; }
     }
-    function clearActiveWorkout() { try { localStorage.removeItem(CRASH_KEY); } catch {} }
+    // Small event log so we can see exactly what happened to a workout backup.
+    function logEvent(msg) { try { const L = JSON.parse(localStorage.getItem("repvault_log") || "[]"); L.push(new Date().toLocaleString() + " " + msg); localStorage.setItem("repvault_log", JSON.stringify(L.slice(-40))); } catch {} }
+    function clearActiveWorkout(reason) { try { if (localStorage.getItem(CRASH_KEY)) logEvent("backup cleared: " + (reason || "unknown")); localStorage.removeItem(CRASH_KEY); } catch {} }
 
     const phaseLabel = { [PHASES.PREP]: "GET READY", [PHASES.WORK]: "WORK", [PHASES.REST_SET]: "REST BETWEEN SETS", [PHASES.REST_EX]: "REST BETWEEN EXERCISES", [PHASES.DONE]: "DONE" };
 
@@ -719,6 +722,7 @@
       // Check for crashed workout on mount
       useEffect(() => {
         const snap = loadActiveWorkout();
+        logEvent("app opened (" + APP_VERSION + "): " + (snap && snap.wo ? "backup found, " + snap.wo.exercises.length + " exercises" : "no backup"));
         if (snap && snap.wo) { crashSnap.current = snap; setShowRestore(true); }
       }, []);
 
@@ -733,7 +737,7 @@
         setShowRestore(false); crashSnap.current = null;
         notify("Workout restored! 💪 Paused — tap play when ready.", "success");
       }
-      function dismissRestore() { clearActiveWorkout(); setShowRestore(false); crashSnap.current = null; }
+      function dismissRestore() { clearActiveWorkout("Discard tapped on recovery prompt"); setShowRestore(false); crashSnap.current = null; }
 
       const persist = useCallback((updater) => {
         setDb(prev => {
@@ -756,6 +760,19 @@
           return { ...prev, pbsByGym: pbg, activeGym: gym, pbs: pbg[gym] || {} };
         });
       }, [persist]);
+
+      // Back up the in-progress workout every 3s on EVERY screen (not just Train).
+      // Only finish / quit / discard ever clear it.
+      useEffect(() => {
+        if (!wo) return;
+        const save = () => { const w = woRef.current || wo; if (w) saveActiveWorkout(w, phase, Math.floor((Date.now() - w.startTime) / 1000)); };
+        save(); const id = setInterval(save, 3000);
+        const onHide = () => { if (document.visibilityState === "hidden") save(); };
+        document.addEventListener("visibilitychange", onHide); window.addEventListener("pagehide", save);
+        return () => { clearInterval(id); document.removeEventListener("visibilitychange", onHide); window.removeEventListener("pagehide", save); };
+      }, [wo, phase]);
+      // Ask iOS not to evict the app's stored data.
+      useEffect(() => { try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch {} }, []);
 
       const ctx = { db, persist, notify, screen, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock, switchGym };
 
@@ -1148,7 +1165,7 @@
       // Hold the timer while the gym question is open
       useEffect(() => { if (wo && !wo.gymChosen) setPaused(true); }, [wo?.gymChosen]);
       useEffect(() => {
-        if (!wo) { clearActiveWorkout(); return; }
+        if (!wo) return;
         saveActiveWorkout(wo, phase, Math.floor((Date.now() - wo.startTime) / 1000));
         saveIntervalRef.current = setInterval(() => {
           const latest = woRef?.current || wo;
@@ -1383,7 +1400,7 @@
         } catch (e) { console.error("Direct save failed:", e); }
         // Then update React state (which also saves)
         persist(prev => ({ ...prev, history: [...prev.history, session], pbs: cleanPBs }));
-        clearActiveWorkout();
+        clearActiveWorkout("workout saved to history");
         // Store the saved session ID so History can open it in edit mode
         window._lastSavedSessionId = session.id;
         notify("Workout saved! Tap to edit if needed.", "success");
@@ -1397,7 +1414,7 @@
       }
 
       function quitWorkout() {
-        clearActiveWorkout();
+        clearActiveWorkout("workout quit / discarded");
         setWo(null); setPhase(PHASES.PREP); setTimer(DEFAULT_TIMERS.prep); setPaused(false); setClock(0); setShowQuit(false); setScreen("home");
         notify("Workout discarded", "warn");
       }
@@ -2455,6 +2472,13 @@
         if (clearConfirmText === "DELETE") { persist(emptyDB()); notify("All data cleared", "warn"); setShowClearConfirm(false); setClearConfirmText(""); }
       }
       function forceUpdate() {
+        const live = woRef.current;
+        if (live) {
+          if (!confirm("You have a workout in progress. It will be backed up and you'll get a Restore prompt after the reload. Continue?")) return;
+          const prev = loadActiveWorkout();
+          saveActiveWorkout(live, (prev && prev.phase) || PHASES.WORK, Math.floor((Date.now() - live.startTime) / 1000));
+        }
+        logEvent("force update tapped" + (live ? " during workout" : ""));
         if ("serviceWorker" in navigator) {
           navigator.serviceWorker.getRegistrations().then(regs => { regs.forEach(r => r.unregister()); });
           caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))).then(() => { notify("Cache cleared! Reloading...", "success"); setTimeout(() => window.location.reload(true), 500); });
@@ -2604,7 +2628,30 @@
           persist(prev => ({ ...prev, history: [...prev.history, ...orphans] }));
           notify(`Rescued ${orphans.length} session(s)!`, "success");
         }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.green}30`, borderRadius: 12, padding: 14, color: C.green, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🛟 Rescue Lost Sessions"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v31"),
+        h("button", { onClick: () => {
+          // Scan EVERY stored key for anything that looks like an unfinished workout.
+          const found = [], keys = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i); let raw = null; try { raw = localStorage.getItem(k); } catch {}
+            keys.push(`${k} (${raw ? Math.round(raw.length / 1024) : 0} KB)`);
+            if (!raw || k === STORAGE_KEY) continue;
+            try { const o = JSON.parse(raw); const w = o && (o.wo || (Array.isArray(o.exercises) ? o : null));
+              if (w && Array.isArray(w.exercises) && w.exercises.length) found.push({ k, o, w }); } catch {}
+          }
+          if (!found.length) { let log = []; try { log = JSON.parse(localStorage.getItem("repvault_log") || "[]").slice(-12); } catch {}
+            alert("No workout backup found on this phone.\n\nStored keys:\n" + keys.join("\n") + "\n\nRecent events:\n" + (log.join("\n") || "none") + "\n\nScreenshot this and send it to Claude."); return; }
+          for (const f of found) {
+            const sets = f.w.exercises.reduce((n, e) => n + (e.sets || []).filter(x => x && (x.completed || Number(x.reps) > 0 || Number(x.weight) > 0)).length, 0);
+            const when = f.o.savedAt ? new Date(f.o.savedAt).toLocaleString() : (f.o.at ? new Date(f.o.at).toLocaleString() : (f.w.startTime ? new Date(f.w.startTime).toLocaleString() : "unknown time"));
+            const first = f.w.exercises.slice(0, 3).map(e => e.name).join(", ");
+            if (confirm(`Found a workout backup (${f.k})\n\nSaved: ${when}\n${f.w.exercises.length} exercises, ${sets} sets logged\nStarts: ${first}\n\nRestore it?`)) {
+              const clock = f.o.clock || (f.w.startTime ? Math.floor((Date.now() - f.w.startTime) / 1000) : 0);
+              localStorage.setItem(CRASH_KEY, JSON.stringify({ wo: f.w, phase: f.o.phase || PHASES.WORK, clock, savedAt: Date.now() }));
+              alert("Restoring. The app will reload; tap Restore on the next screen."); window.location.reload(); return;
+            }
+          }
+        }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🧯 Find Workout Backup"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault " + APP_VERSION),
       );
     }
 
