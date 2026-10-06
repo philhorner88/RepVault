@@ -611,20 +611,26 @@
     const phaseLabel = { [PHASES.PREP]: "GET READY", [PHASES.WORK]: "WORK", [PHASES.REST_SET]: "REST BETWEEN SETS", [PHASES.REST_EX]: "REST BETWEEN EXERCISES", [PHASES.DONE]: "DONE" };
 
     // --- Audio Engine ---
+    // iOS: mark our audio as "ambient" so beeps and voice mix with music
+    // (Spotify, Apple Music, podcasts) instead of pausing it.
+    function setAmbientAudio() { try { if (navigator.audioSession && navigator.audioSession.type !== "ambient") navigator.audioSession.type = "ambient"; } catch {} }
+    setAmbientAudio();
+
     class AudioEngine {
       constructor() { this.ctx = null; this.enabled = true; this.hb = null; }
-      init() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); if (this.ctx.state === "suspended") this.ctx.resume(); }
+      init() { setAmbientAudio(); if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); if (this.ctx.state === "suspended") this.ctx.resume(); }
       pip(f = 880, d = 0.08) { if (!this.enabled || !this.ctx) return; const o = this.ctx.createOscillator(), g = this.ctx.createGain(); o.connect(g); g.connect(this.ctx.destination); o.frequency.value = f; o.type = "sine"; g.gain.setValueAtTime(0.3, this.ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + d); o.start(this.ctx.currentTime); o.stop(this.ctx.currentTime + d); }
       countdownPip() { this.pip(1200, 0.06); }
       phasePip() { this.pip(660, 0.15); }
-      speak(t) { if (!this.enabled || !window.speechSynthesis) return; window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(t); u.rate = 1.1; u.pitch = 0.9; u.volume = 0.8; window.speechSynthesis.speak(u); }
+      speak(t) { if (!this.enabled || !window.speechSynthesis) return; setAmbientAudio(); window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(t); u.rate = 1.1; u.pitch = 0.9; u.volume = 0.8; window.speechSynthesis.speak(u); }
       startHeartbeat() { if (this.hb) return; this.init(); this.hb = setInterval(() => { if (!this.ctx) return; const o = this.ctx.createOscillator(), g = this.ctx.createGain(); o.connect(g); g.connect(this.ctx.destination); g.gain.setValueAtTime(0.001, this.ctx.currentTime); o.start(this.ctx.currentTime); o.stop(this.ctx.currentTime + 0.01); }, 10000); }
       stopHeartbeat() { if (this.hb) { clearInterval(this.hb); this.hb = null; } }
       toggle() { this.enabled = !this.enabled; return this.enabled; }
     }
     const audio = new AudioEngine();
 
-    function updateMedia(title, artist) { if ("mediaSession" in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: "RepVault" }); } catch {} } }
+    // Disabled: claiming the lock-screen "Now Playing" slot made iOS pause the user's music.
+    function updateMedia(title, artist) { }
 
     // Module-scope mirror of the active workout. Plain mutable object so it can
     // never fall out of scope between components (App writes, Train reads).
@@ -2541,7 +2547,7 @@
           persist(prev => ({ ...prev, history: [...prev.history, ...orphans] }));
           notify(`Rescued ${orphans.length} session(s)!`, "success");
         }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.green}30`, borderRadius: 12, padding: 14, color: C.green, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🛟 Rescue Lost Sessions"),
-        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v28"),
+        h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault v29"),
       );
     }
 
