@@ -1,4 +1,4 @@
-const CACHE_NAME = 'repvault-v33';
+const CACHE_NAME = 'repvault-v34';
 
 // Install: cache core assets
 self.addEventListener('install', e => {
