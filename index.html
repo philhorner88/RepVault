@@ -63,13 +63,16 @@
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
     const CRASH_KEY = "repvault_active_workout";
-    const APP_VERSION = "v33";
+    const APP_VERSION = "v34";
 
     // Muscle groups — order matters: more specific phrases checked first
     const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "plyometric", "cardio"];
     const MUSCLE_RULES = [
       // Specific overrides — must precede the generic rules below, since the first
       // match wins and words like "press" or "raise" would otherwise capture these.
+      { phrase: "reverse fly", group: "shoulders" },
+      { phrase: "reverse flye", group: "shoulders" },
+      { phrase: "reverse pec deck", group: "shoulders" },
       { phrase: "pallof", group: "core" },
       { phrase: "anti-rotation", group: "core" },
       { phrase: "anti rotation", group: "core" },
@@ -196,7 +199,10 @@
     ];
     const CARDIO_LIST = ["run", "bike", "swim", "cycle", "jog", "sprint", "elliptical", "stair", "walk", "treadmill", "rowing machine", "hiit"];
 
+    // Muscle groups you've picked yourself (keyed by pbKey). Always win over the auto rules.
+    let MUSCLE_OVERRIDES = {};
     function detectMuscle(name) {
+      try { const o = MUSCLE_OVERRIDES[pbKey(name)]; if (o) return o; } catch {}
       const l = normaliseName(name);
       for (const rule of MUSCLE_RULES) { if (l.includes(rule.phrase)) return rule.group; }
       if (CARDIO_LIST.some(k => l.includes(k))) return "cardio";
@@ -707,7 +713,7 @@
     // MAIN APP
     // ============================================================
     function App() {
-      const [db, setDb] = useState(() => loadDB());
+      const [db, setDb] = useState(() => { const d = loadDB(); MUSCLE_OVERRIDES = (d && d.muscleOverrides) || {}; return d; });
       const [screen, setScreen] = useState("home");
       const [wo, setWo] = useState(null);
       useEffect(() => { woRef.current = wo; }, [wo]);
@@ -746,6 +752,7 @@
           if (next.activeGym) {
             next = { ...next, pbsByGym: { ...(next.pbsByGym || {}), [next.activeGym]: next.pbs || {} } };
           }
+          MUSCLE_OVERRIDES = next.muscleOverrides || {};
           const saved = saveDB(next);
           if (!saved) { setTimeout(() => setNotif({ msg: "⚠️ Save failed! Your data may not persist.", type: "error", id: Date.now() }), 100); }
           return next;
@@ -774,7 +781,21 @@
       // Ask iOS not to evict the app's stored data.
       useEffect(() => { try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch {} }, []);
 
-      const ctx = { db, persist, notify, screen, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock, switchGym };
+      // Permanently set the muscle group for an exercise: remembered for the future and
+      // applied to every plan, past session and the live workout with the same exercise.
+      const setMuscleFor = useCallback((name, muscle) => {
+        const k = pbKey(name); if (!k || !muscle) return;
+        const fix = ex => (ex && ex.name && pbKey(ex.name) === k) ? { ...ex, muscle } : ex;
+        persist(prev => {
+          const bps = {};
+          Object.keys(prev.blueprints || {}).forEach(d => { const bp = prev.blueprints[d]; bps[d] = bp && bp.exercises ? { ...bp, exercises: bp.exercises.map(fix) } : bp; });
+          return { ...prev, muscleOverrides: { ...(prev.muscleOverrides || {}), [k]: muscle }, blueprints: bps,
+            history: (prev.history || []).map(x => x && x.exercises ? { ...x, exercises: x.exercises.map(fix) } : x) };
+        });
+        setWo(prev => prev ? { ...prev, exercises: prev.exercises.map(fix) } : prev);
+      }, [persist]);
+
+      const ctx = { db, persist, notify, screen, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock, switchGym, setMuscleFor };
 
       return h(AppCtx.Provider, { value: ctx },
         notif && h(Toast, notif),
@@ -1003,7 +1024,7 @@
     // TRAINING SCREEN
     // ============================================================
     function Train() {
-      const { db, persist, notify, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock , switchGym } = useContext(AppCtx);
+      const { db, persist, notify, setScreen, wo, setWo, phase, setPhase, timer, setTimer, paused, setPaused, clock, setClock , switchGym, setMuscleFor } = useContext(AppCtx);
       const [showAdd, setShowAdd] = useState(false);
       const [addText, setAddText] = useState("");
       const [showQuit, setShowQuit] = useState(false);
@@ -1494,6 +1515,8 @@
       }
 
       function updateExMuscleWo(exIdx, newMuscle) {
+        const ex = (woRef.current || wo)?.exercises?.[exIdx];
+        if (ex && ex.name) { setMuscleFor(ex.name, newMuscle); notify(`${ex.name} is now ${newMuscle} everywhere`, "success"); return; }
         setWo(prev => {
           const next = deepClone(prev);
           next.exercises[exIdx].muscle = newMuscle;
@@ -1903,7 +1926,7 @@
       );
     }
     function Blueprints() {
-      const { db, persist, notify, setWo, setScreen, switchGym } = useContext(AppCtx);
+      const { db, persist, notify, setWo, setScreen, switchGym, setMuscleFor } = useContext(AppCtx);
       const [day, setDay] = useState(DAYS[0]);
       const [editName, setEditName] = useState("");
       const [editing, setEditing] = useState(false);
@@ -1917,6 +1940,8 @@
         setTimeout(() => { if (textareaRef.current) textareaRef.current.value = bp?.exercises?.map(e => e.name).join("\n") || ""; }, 50);
       }
       function updateExMuscle(idx, newMuscle) {
+        const ex = db.blueprints?.[day]?.exercises?.[idx];
+        if (ex && ex.name) { setMuscleFor(ex.name, newMuscle); notify(`${ex.name} is now ${newMuscle} everywhere`, "success"); return; }
         persist(prev => {
           const bps = { ...prev.blueprints };
           const current = bps[day];
@@ -1986,7 +2011,7 @@
     // HISTORY
     // ============================================================
     function History() {
-      const { db, persist, notify } = useContext(AppCtx);
+      const { db, persist, notify, setMuscleFor } = useContext(AppCtx);
       const [expanded, setExpanded] = useState(null);
       const [editId, setEditId] = useState(null);
       const [editData, setEditData] = useState(null);
@@ -2010,6 +2035,7 @@
       }
 
       function updateEditEx(ei, field, val) {
+        if (field === "muscle") { const nm = editData?.exercises?.[ei]?.name; if (nm) { setMuscleFor(nm, val); notify(`${nm} is now ${val} everywhere`, "success"); } }
         setEditData(prev => {
           const next = deepClone(prev);
           next.exercises[ei][field] = val;
