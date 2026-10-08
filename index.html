@@ -63,7 +63,7 @@
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
     const CRASH_KEY = "repvault_active_workout";
-    const APP_VERSION = "v39";
+    const APP_VERSION = "v40";
 
     // Muscle groups — order matters: more specific phrases checked first
     const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "plyometric", "cardio"];
@@ -1613,8 +1613,7 @@
           h("div", { className: "slide-up", style: { background: C.surface, borderRadius: 20, padding: 28, width: "100%", maxWidth: 340, border: `1px solid ${C.cyan}30`, textAlign: "center" } },
             h("div", { style: { fontSize: 30, marginBottom: 10 } }, "📍"),
             h("div", { style: { fontSize: 17, fontWeight: 700, marginBottom: 4 } }, "Where are you training?"),
-            h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 10 } }, "PBs and previous weights are tracked per gym"),
-            h("div", { style: { fontSize: 12, color: C.amber, marginBottom: 18 } }, "🔔 Turn Silent mode off for voice cues. Your music keeps playing either way."),
+            h("div", { style: { fontSize: 12, color: C.textDim, marginBottom: 18 } }, "PBs and previous weights are tracked per gym"),
             (db.gyms || ["Saint Haven", "Mt Martha", "Other"]).map(g => h("button", {
               key: g,
               onClick: () => { switchGym(g); setWo(prev => ({ ...prev, gym: g, gymChosen: true, startTime: Date.now() })); setPaused(false); },
