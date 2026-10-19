@@ -63,7 +63,7 @@
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
     const CRASH_KEY = "repvault_active_workout";
-    const APP_VERSION = "v42";
+    const APP_VERSION = "v44";
 
     // Muscle groups — order matters: more specific phrases checked first
     const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "plyometric", "cardio"];
@@ -644,7 +644,7 @@
         };
         return c;
       }
-      make() { this.ctx = this.newCtx(); this.bad = 0; this.wasInterrupted = false; this.stale = false; }
+      make() { this.ctx = this.newCtx(); this.born = Date.now(); this.bad = 0; this.wasInterrupted = false; this.stale = false; }
       init() {
         setAmbientAudio();
         try {
@@ -668,12 +668,12 @@
         if (!this.enabled) return;
         try {
           if (!this.ctx || this.ctx.state === "closed") { this.rebuild("closed"); return; }
-          if (this.ctx.state === "running") { if (this.stale && !this.pending) this.refresh(); return; }
+          if (this.ctx.state === "running") { if (!this.pending && (this.stale || Date.now() - (this.born || 0) > 180000)) this.refresh(this.stale ? "after interruption" : "routine"); return; }
           if (this.needsTap && (this.tapTries || 0) >= 1) { this.rebuild(this.ctx.state); return; }
           const r = this.ctx.resume(); if (r && r.catch) r.catch(() => {}); this.unlock(); this.tapTries = (this.tapTries || 0) + 1;
         } catch (e) { this.log("tapFix failed " + (e && e.message)); }
       }
-      refresh() {
+      refresh(why) {
         try {
           const nc = this.newCtx(); this.pending = nc; this.stale = false;
           const r = nc.resume(); if (r && r.catch) r.catch(() => {});
@@ -681,9 +681,9 @@
           const map = {}, keys = Object.keys(VOICE_CLIPS); let left = keys.length;
           const swap = () => {
             if (this.pending !== nc) return; this.pending = null;
-            const old = this.ctx; this.ctx = nc; this.clips = map; this.bad = 0; this.needsTap = false; this.wasInterrupted = false;
+            const old = this.ctx; this.ctx = nc; this.born = Date.now(); this.clips = map; this.bad = 0; this.needsTap = false; this.wasInterrupted = false;
             try { old && old.state !== "closed" && old.close(); } catch {}
-            this.log("sound engine refreshed after interruption");
+            if (why !== "routine") this.log("sound engine refreshed (" + why + ")");
           };
           keys.forEach(k => {
             try { const bin = atob(VOICE_CLIPS[k]); const buf = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
@@ -914,13 +914,29 @@
           if (vv && !typing()) { dy = Math.round(vv.offsetTop + vv.height - window.innerHeight); if (dy < 1) dy = 0; }
           el.style.transform = `translate(-50%, ${dy}px)`;
         };
-        const nudge = () => { if (typing()) return; window.scrollBy(0, 1); window.scrollBy(0, -1); place(); };
-        const onBlur = () => { [60, 250, 600].forEach(t => setTimeout(nudge, t)); };
+        // Known iOS home-screen-app bug: opening the keyboard shrinks the whole page height and it
+        // never grows back, so the bar floats up. Remember the tallest height we've seen; after the
+        // keyboard closes, if the page is shorter, briefly hide and re-show the app so iOS re-measures.
+        let maxH = window.innerHeight, toggled = false;
+        const remeasure = () => {
+          if (typing()) return;
+          if (window.innerHeight >= maxH - 4 || toggled) { place(); return; }
+          toggled = true;
+          const root = document.getElementById("root"); if (!root) return;
+          const y = window.scrollY; root.style.display = "none"; void root.offsetHeight; void document.body.offsetHeight;
+          root.style.display = ""; void root.offsetHeight; window.scrollTo(0, y);
+          logEvent("screen re-measured after keyboard (" + window.innerHeight + "/" + maxH + ")");
+          place();
+        };
+        const onResize = () => { if (!typing() && window.innerHeight > maxH) maxH = window.innerHeight; };
+        window.addEventListener("resize", onResize);
+        const nudge = () => { if (typing()) return; window.scrollBy(0, 1); window.scrollBy(0, -1); remeasure(); };
+        const onBlur = () => { toggled = false; [140, 450, 900].forEach(t => setTimeout(nudge, t)); };
         place();
         vv && vv.addEventListener("resize", place); vv && vv.addEventListener("scroll", place);
         window.addEventListener("resize", place); window.addEventListener("scroll", place, { passive: true });
         document.addEventListener("focusout", onBlur);
-        return () => { vv && vv.removeEventListener("resize", place); vv && vv.removeEventListener("scroll", place); window.removeEventListener("resize", place); window.removeEventListener("scroll", place); document.removeEventListener("focusout", onBlur); };
+        return () => { vv && vv.removeEventListener("resize", place); vv && vv.removeEventListener("scroll", place); window.removeEventListener("resize", place); window.removeEventListener("scroll", place); document.removeEventListener("focusout", onBlur); window.removeEventListener("resize", onResize); };
       }, []);
       return h("div", { ref: navRef, style: {
         position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 500,
@@ -1245,7 +1261,7 @@
         notify("Weight copied to remaining sets", "success");
       }
 
-      useEffect(() => { audio.init(); audio.startHeartbeat(); return () => audio.stopHeartbeat(); }, []);
+      useEffect(() => { audio.init(); audio.stale = true; audio.startHeartbeat(); return () => audio.stopHeartbeat(); }, []);
       // Show a banner when iOS has killed the sound, so one tap brings it back.
       const [audioDead, setAudioDead] = useState(false);
       useEffect(() => { const id = setInterval(() => setAudioDead(!!(audio.enabled && audio.needsTap)), 1000); return () => clearInterval(id); }, []);
@@ -2759,6 +2775,7 @@
             }
           }
         }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.cyan}30`, borderRadius: 12, padding: 14, color: C.cyan, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "🧯 Find Workout Backup"),
+        h("button", { onClick: () => { let log = []; try { log = JSON.parse(localStorage.getItem("repvault_log") || "[]").slice(-40); } catch {} alert("Recent events (" + APP_VERSION + "):\n\n" + (log.join("\n") || "none") + "\n\nScreenshot this and send it to Claude."); }, style: { width: "100%", marginTop: 4, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, color: C.textDim, cursor: "pointer", fontSize: 13, fontWeight: 500 } }, "📜 Event Log"),
         h("div", { style: { textAlign: "center", marginTop: 20, fontSize: 10, color: C.textDim } }, "RepVault " + APP_VERSION),
       );
     }
