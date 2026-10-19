@@ -63,7 +63,7 @@
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
     const CRASH_KEY = "repvault_active_workout";
-    const APP_VERSION = "v40";
+    const APP_VERSION = "v42";
 
     // Muscle groups — order matters: more specific phrases checked first
     const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "plyometric", "cardio"];
@@ -614,7 +614,7 @@
       try { const d = localStorage.getItem(CRASH_KEY); if (!d) return null; const snap = JSON.parse(d); if (Date.now() - snap.savedAt > 12 * 60 * 60 * 1000) { clearActiveWorkout("older than 12 hours"); return null; } return snap; } catch { return null; }
     }
     // Small event log so we can see exactly what happened to a workout backup.
-    function logEvent(msg) { try { const L = JSON.parse(localStorage.getItem("repvault_log") || "[]"); L.push(new Date().toLocaleString() + " " + msg); localStorage.setItem("repvault_log", JSON.stringify(L.slice(-40))); } catch {} }
+    function logEvent(msg) { try { const L = JSON.parse(localStorage.getItem("repvault_log") || "[]"); L.push(new Date().toLocaleString() + " " + msg); localStorage.setItem("repvault_log", JSON.stringify(L.slice(-120))); } catch {} }
     function clearActiveWorkout(reason) { try { if (localStorage.getItem(CRASH_KEY)) logEvent("backup cleared: " + (reason || "unknown")); localStorage.removeItem(CRASH_KEY); } catch {} }
 
     const phaseLabel = { [PHASES.PREP]: "GET READY", [PHASES.WORK]: "WORK", [PHASES.REST_SET]: "REST BETWEEN SETS", [PHASES.REST_EX]: "REST BETWEEN EXERCISES", [PHASES.DONE]: "DONE" };
@@ -632,11 +632,19 @@
     class AudioEngine {
       constructor() { this.ctx = null; this.enabled = true; this.hb = null; this.needsTap = false; this.bad = 0; this.tapTries = 0; }
       log(m) { try { const now = Date.now(); if (m === this._lastLog && now - (this._lastLogAt || 0) < 60000) return; this._lastLog = m; this._lastLogAt = now; logEvent("audio: " + m); } catch {} }
-      make() {
-        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-        this.bad = 0;
-        this.ctx.onstatechange = () => { const st = this.ctx && this.ctx.state; this.log("state " + st); if (st && st !== "running" && document.visibilityState === "visible") this.wake(); };
+      newCtx() {
+        const c = new (window.AudioContext || window.webkitAudioContext)();
+        c.onstatechange = () => {
+          if (c !== this.ctx) return; const st = c.state; this.log("state " + st);
+          if (st === "interrupted") this.wasInterrupted = true;
+          // iOS bug: after an interruption the sound can come back as "running" but stay silent.
+          // Swap in a fresh sound engine on the next tap (taps are when iOS allows it).
+          if (st === "running" && this.wasInterrupted) { this.wasInterrupted = false; this.stale = true; this.log("back after interruption, refresh on next tap"); }
+          if (st !== "running" && document.visibilityState === "visible") this.wake();
+        };
+        return c;
       }
+      make() { this.ctx = this.newCtx(); this.bad = 0; this.wasInterrupted = false; this.stale = false; }
       init() {
         setAmbientAudio();
         try {
@@ -660,14 +668,33 @@
         if (!this.enabled) return;
         try {
           if (!this.ctx || this.ctx.state === "closed") { this.rebuild("closed"); return; }
-          if (this.ctx.state === "running") return;
+          if (this.ctx.state === "running") { if (this.stale && !this.pending) this.refresh(); return; }
           if (this.needsTap && (this.tapTries || 0) >= 1) { this.rebuild(this.ctx.state); return; }
           const r = this.ctx.resume(); if (r && r.catch) r.catch(() => {}); this.unlock(); this.tapTries = (this.tapTries || 0) + 1;
         } catch (e) { this.log("tapFix failed " + (e && e.message)); }
       }
+      refresh() {
+        try {
+          const nc = this.newCtx(); this.pending = nc; this.stale = false;
+          const r = nc.resume(); if (r && r.catch) r.catch(() => {});
+          try { const b = nc.createBuffer(1, 1, 22050), src = nc.createBufferSource(); src.buffer = b; src.connect(nc.destination); src.start(0); } catch {}
+          const map = {}, keys = Object.keys(VOICE_CLIPS); let left = keys.length;
+          const swap = () => {
+            if (this.pending !== nc) return; this.pending = null;
+            const old = this.ctx; this.ctx = nc; this.clips = map; this.bad = 0; this.needsTap = false; this.wasInterrupted = false;
+            try { old && old.state !== "closed" && old.close(); } catch {}
+            this.log("sound engine refreshed after interruption");
+          };
+          keys.forEach(k => {
+            try { const bin = atob(VOICE_CLIPS[k]); const buf = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+              nc.decodeAudioData(buf.buffer, b => { map[k] = b; if (--left === 0) swap(); }, () => { if (--left === 0) swap(); }); } catch { if (--left === 0) swap(); }
+          });
+          setTimeout(swap, 4000);
+        } catch (e) { this.pending = null; this.log("refresh failed " + (e && e.message)); }
+      }
       rebuild(why) {
         try { this.ctx && this.ctx.state !== "closed" && this.ctx.close(); } catch {}
-        this.ctx = null; this.clips = null; this.make();
+        this.pending = null; this.ctx = null; this.clips = null; this.make();
         try { const r = this.ctx.resume(); if (r && r.catch) r.catch(() => {}); } catch {}
         this.unlock(); this.loadVoice(); this.needsTap = false; this.bad = 0; this.tapTries = 0; this.log("rebuilt after tap (" + why + ")");
       }
@@ -1225,7 +1252,12 @@
       // Keep the screen awake during a workout: iOS mutes music-friendly ("ambient") audio while locked.
       useEffect(() => {
         let lock = null, alive = true;
-        const get = async () => { try { if (alive && navigator.wakeLock && document.visibilityState === "visible" && (!lock || lock.released)) lock = await navigator.wakeLock.request("screen"); } catch {} };
+        const get = async () => {
+          logEvent("screen " + document.visibilityState);
+          try { if (alive && navigator.wakeLock && document.visibilityState === "visible" && (!lock || lock.released)) { lock = await navigator.wakeLock.request("screen"); logEvent("keep-awake on"); lock.addEventListener && lock.addEventListener("release", () => logEvent("keep-awake released")); } }
+          catch (e) { logEvent("keep-awake failed: " + (e && (e.name || e.message))); }
+          if (!navigator.wakeLock) logEvent("keep-awake not supported");
+        };
         get(); document.addEventListener("visibilitychange", get);
         return () => { alive = false; document.removeEventListener("visibilitychange", get); try { lock && lock.release(); } catch {} };
       }, []);
@@ -2714,7 +2746,7 @@
             try { const o = JSON.parse(raw); const w = o && (o.wo || (Array.isArray(o.exercises) ? o : null));
               if (w && Array.isArray(w.exercises) && w.exercises.length) found.push({ k, o, w }); } catch {}
           }
-          if (!found.length) { let log = []; try { log = JSON.parse(localStorage.getItem("repvault_log") || "[]").slice(-12); } catch {}
+          if (!found.length) { let log = []; try { log = JSON.parse(localStorage.getItem("repvault_log") || "[]").slice(-40); } catch {}
             alert("No workout backup found on this phone.\n\nStored keys:\n" + keys.join("\n") + "\n\nRecent events:\n" + (log.join("\n") || "none") + "\n\nScreenshot this and send it to Claude."); return; }
           for (const f of found) {
             const sets = f.w.exercises.reduce((n, e) => n + (e.sets || []).filter(x => x && (x.completed || Number(x.reps) > 0 || Number(x.weight) > 0)).length, 0);
