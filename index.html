@@ -63,7 +63,7 @@
     const SETS_PER_EXERCISE = 4;
     const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
     const CRASH_KEY = "repvault_active_workout";
-    const APP_VERSION = "v44";
+    const APP_VERSION = "v49";
 
     // Muscle groups — order matters: more specific phrases checked first
     const MUSCLE_GROUPS = ["chest", "back", "shoulders", "glutes", "quads", "hamstrings", "calves", "biceps", "triceps", "core", "plyometric", "cardio"];
@@ -397,6 +397,44 @@
       return new Date(aest.getTime() - (10 * 60 * 60 * 1000));
     }
     function thisMonday() { return getMonday(new Date()); }
+    // A real PB this week = better than anything before this week (heavier, or same weight for more reps).
+    // Ties with an old best and first-ever attempts don't count.
+    // All-time best for one exercise at one gym, worked out from the saved sessions themselves,
+    // so it always matches History (including edits) and knows the date it was actually set.
+    function pbFromHistory(db, name, gym) {
+      const k = pbKey(name), g = gym || db.activeGym || "Saint Haven";
+      let best = null, vol = 0, volDate = null;
+      (db.history || []).forEach(x => {
+        if ((x.gym || "Saint Haven") !== g) return;
+        (x.exercises || []).forEach(ex => {
+          if (!ex || !ex.name || pbKey(ex.name) !== k) return;
+          let v = 0;
+          (ex.sets || []).forEach(st => {
+            const w = Number(st && st.weight) || 0, r = Number(st && st.reps) || 0; v += w * r;
+            if (w > 0 && (!best || w > best.w || (w === best.w && r > best.r))) best = { w, r, date: x.date };
+          });
+          if (v > vol) { vol = v; volDate = x.date; }
+        });
+      });
+      if (!best) return null;
+      return { maxWeight: best.w, repsAtMax: best.r, maxReps: best.r, maxVolume: vol, date: best.date, volDate };
+    }
+    function computeWeekPBs(db, gymFilter) {
+      const start = thisMonday(), gymOf = x => x.gym || "Saint Haven", prior = {}, week = {};
+      (db.history || []).forEach(x => {
+        if (gymFilter && gymOf(x) !== gymFilter) return;
+        const tgt = new Date(x.date) >= start ? week : prior;
+        (x.exercises || []).forEach(ex => {
+          if (!ex || !ex.name || ex.isCardio) return; const k = pbKey(ex.name);
+          (ex.sets || []).forEach(st => {
+            const w = Number(st && st.weight) || 0, r = Number(st && st.reps) || 0; if (w <= 0) return;
+            const cur = tgt[k]; if (!cur || w > cur.w || (w === cur.w && r > cur.r)) tgt[k] = { w, r, name: ex.name };
+          });
+        });
+      });
+      return Object.keys(week).filter(k => prior[k] && (week[k].w > prior[k].w || (week[k].w === prior[k].w && week[k].r > prior[k].r)))
+        .map(k => ({ key: k, name: (db.pbs && db.pbs[k] && db.pbs[k]._displayName) || week[k].name, weight: week[k].w, reps: week[k].r, prevW: prior[k].w, prevR: prior[k].r }));
+    }
     function thisMonthStart() {
       const d = new Date();
       const aest = new Date(d.getTime() + (10 * 60 * 60 * 1000));
@@ -622,7 +660,9 @@
     // --- Audio Engine ---
     // iOS: mark our audio as "ambient" so beeps and voice mix with music
     // (Spotify, Apple Music, podcasts) instead of pausing it.
-    function setAmbientAudio() { try { if (navigator.audioSession && navigator.audioSession.type !== "ambient") navigator.audioSession.type = "ambient"; } catch {} }
+    // Running inside the RepVault iPhone app (Capacitor) rather than Safari?
+    const IS_NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === "function" && window.Capacitor.isNativePlatform());
+    function setAmbientAudio() { if (IS_NATIVE) return; try { if (navigator.audioSession && navigator.audioSession.type !== "ambient") navigator.audioSession.type = "ambient"; } catch {} }
     setAmbientAudio();
 
     // Pre-recorded voice cues, played through Web Audio so they mix with music.
@@ -681,6 +721,8 @@
           const map = {}, keys = Object.keys(VOICE_CLIPS); let left = keys.length;
           const swap = () => {
             if (this.pending !== nc) return; this.pending = null;
+            // Only swap if iOS actually let the new engine start; otherwise keep the old one.
+            if (nc.state !== "running") { try { nc.close(); } catch {} this.log("refresh skipped: new engine not allowed to start (" + nc.state + ")"); return; }
             const old = this.ctx; this.ctx = nc; this.born = Date.now(); this.clips = map; this.bad = 0; this.needsTap = false; this.wasInterrupted = false;
             try { old && old.state !== "closed" && old.close(); } catch {}
             if (why !== "routine") this.log("sound engine refreshed (" + why + ")");
@@ -737,7 +779,56 @@
       stopHeartbeat() { if (this.hb) { clearInterval(this.hb); this.hb = null; } if (this.hc) { clearInterval(this.hc); this.hc = null; } }
       toggle() { this.enabled = !this.enabled; return this.enabled; }
     }
-    const audio = new AudioEngine();
+    // In the iPhone app, all sound is played by native iOS code (RepVaultAudio plugin):
+    // the phone's own voice, over your music, in Silent mode and with the screen locked.
+    // The workout screen hands it the whole upcoming timeline of cues, so they still fire
+    // while the app is in the background.
+    class NativeEngine {
+      constructor() { this.enabled = true; this.native = true; this.needsTap = false; this.last = null; }
+      call(method, args) {
+        try {
+          const C = window.Capacitor; let r = null;
+          if (C && typeof C.nativePromise === "function") r = C.nativePromise("RepVaultAudio", method, args || {});
+          else if (C && C.Plugins && C.Plugins.RepVaultAudio) r = C.Plugins.RepVaultAudio[method](args || {});
+          if (r && r.catch) r.catch(e => logEvent("native sound " + method + " failed: " + (e && e.message)));
+        } catch (e) { logEvent("native sound " + method + " error: " + (e && e.message)); }
+      }
+      init() {}
+      startHeartbeat() { this.call("start", { duck: true }); }
+      stopHeartbeat() { this.call("cancel"); this.call("stop"); }
+      schedule(items) { this.last = items; if (!this.enabled) return; const now = Date.now(); this.call("schedule", { items: items.filter(i => i.t > now - 1500) }); }
+      cancel() { this.last = null; this.call("cancel"); }
+      announce(text) { if (this.enabled && text) this.call("speak", { text }); }
+      say(parts) { if (parts === "pb") this.announce("New Personal Best!"); }
+      speak(t) { this.announce(t); }
+      pip() {} countdownPip() {} phasePip() {} tapFix() {} wake() {}
+      nameKey(n) { return n; }
+      toggle() { this.enabled = !this.enabled; if (!this.enabled) this.call("cancel"); else if (this.last) this.schedule(this.last); return this.enabled; }
+    }
+    // Every cue from the current point to the end of the workout, assuming the timer runs on.
+    function buildCueTimeline(wo, phase, endMs, timers) {
+      const items = []; let ph = phase, ei = wo.currentExIdx, si = wo.currentSetIdx, t = endMs, guard = 0;
+      while (ph !== PHASES.DONE && guard++ < 600) {
+        const ex = wo.exercises[ei]; if (!ex) break;
+        const base = `${wo.id}:${ph}:${ei}:${si}`, nSets = (ex.sets || []).length;
+        [3, 2, 1].forEach(n => items.push({ id: base + ":c" + n, t: t - n * 1000, kind: "beep", freq: 1200, dur: 0.06 }));
+        items.push({ id: base + ":p", t, kind: "beep", freq: 660, dur: 0.15 });
+        const say = text => items.push({ id: base + ":s", t: t + 180, kind: "speak", text });
+        if (ph === PHASES.PREP) { say(`${ex.name}, Set ${si + 1}, Work`); ph = PHASES.WORK; t += timers.work * 1000; }
+        else if (ph === PHASES.WORK) {
+          const lastSet = si >= nSets - 1, lastEx = ei >= wo.exercises.length - 1;
+          if (lastSet && lastEx) { say("Workout Complete"); ph = PHASES.DONE; }
+          else if (lastSet) { say("Rest between exercises"); ph = PHASES.REST_EX; t += timers.restEx * 1000; }
+          else { say(`Rest. Next: Set ${si + 2}`); ph = PHASES.REST_SET; t += timers.restSet * 1000; }
+        }
+        else if (ph === PHASES.REST_SET) { say(`${ex.name}, Set ${si + 2}, Work`); si++; ph = PHASES.WORK; t += timers.work * 1000; }
+        else if (ph === PHASES.REST_EX) { const ne = wo.exercises[ei + 1]; if (ne) say(`Next: ${ne.name}`); ei++; si = 0; ph = PHASES.PREP; t += timers.prep * 1000; }
+        else break;
+      }
+      return items;
+    }
+    const audio = IS_NATIVE ? new NativeEngine() : new AudioEngine();
+    if (IS_NATIVE) logEvent("iPhone app: native sound engine");
     ["touchend", "click", "keydown"].forEach(ev => document.addEventListener(ev, () => { if (audio.ctx) audio.tapFix(); }, { capture: true, passive: true }));
     ["visibilitychange", "pageshow", "focus"].forEach(ev => (ev === "visibilitychange" ? document : window).addEventListener(ev, () => { if (document.visibilityState === "visible" && audio.ctx) audio.wake(); }));
 
@@ -908,8 +999,22 @@
       useEffect(() => {
         const vv = window.visualViewport;
         const typing = () => { const a = document.activeElement; return a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName); };
+        const portrait = () => !window.matchMedia || window.matchMedia("(orientation: portrait)").matches;
+        const standalone = navigator.standalone === true || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+        let fullH = (portrait() && !typing()) ? window.innerHeight : 0;
         const place = () => {
           const el = navRef.current; if (!el) return;
+          if (portrait() && !typing() && window.innerHeight > fullH) fullH = window.innerHeight;
+          // Home-screen app: iOS can shrink the page after the keyboard and float the bar up.
+          // Pin the bar by its distance from the TOP using the app's full height, which iOS
+          // doesn't corrupt, instead of trusting "bottom".
+          if (standalone && portrait() && !typing() && fullH > 0) {
+            const top = Math.round(fullH - el.offsetHeight);
+            if (el.style.top !== top + "px") { el.style.top = top + "px"; el.style.bottom = "auto"; }
+            el.style.transform = "translate(-50%, 0px)";
+            return;
+          }
+          if (el.style.top) { el.style.top = ""; el.style.bottom = "0px"; }
           let dy = 0;
           if (vv && !typing()) { dy = Math.round(vv.offsetTop + vv.height - window.innerHeight); if (dy < 1) dy = 0; }
           el.style.transform = `translate(-50%, ${dy}px)`;
@@ -994,24 +1099,7 @@
       }, [filteredHistory]);
 
       // PBs achieved this week
-      const weekPBs = useMemo(() => {
-        const activeGym = db.activeGym || "Saint Haven";
-        const weekSessions = db.history.filter(x => new Date(x.date) >= mondayStart && (x.gym || "Saint Haven") === activeGym);
-        const results = [];
-        const allPBs = db.pbs || {};
-        weekSessions.forEach(session => {
-          (session.exercises || []).forEach(ex => {
-            const k = pbKey(ex.name);
-            const pb = allPBs[k];
-            if (!pb) return;
-            const sessionMax = Math.max(0, ...(ex.sets || []).map(s => s.weight || 0));
-            if (sessionMax >= pb.maxWeight && sessionMax > 0) {
-              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: (pb.repsAtMax != null ? pb.repsAtMax : pb.maxReps) });
-            }
-          });
-        });
-        return results;
-      }, [db.history, db.pbs, db.activeGym]);
+      const weekPBs = useMemo(() => computeWeekPBs(db, db.activeGym || "Saint Haven"), [db.history, db.pbs, db.activeGym]);
 
       function makeExercises(names) {
         return names.map(name => ({
@@ -1080,7 +1168,7 @@
         weekPBs.length > 0 && h("div", { style: { background: `linear-gradient(135deg, ${C.gold}08, ${C.gold}03)`, borderRadius: 16, padding: 16, border: `1px solid ${C.gold}25`, marginBottom: 16 } },
           h("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10, fontWeight: 700 } }, `🏆 This Week's PBs (${weekPBs.length})`),
           weekPBs.map(pb => h("div", { key: pb.key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: `${C.gold}08`, borderRadius: 8, marginBottom: 3, border: `1px solid ${C.gold}12` } },
-            h("span", { style: { fontSize: 12, fontWeight: 600, textTransform: "capitalize", flex: 1 } }, pb.name),
+            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 12, fontWeight: 600, textTransform: "capitalize" } }, pb.name), h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 2 } }, `was ${pb.prevW}kg × ${pb.prevR}`)),
             h("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
               h("span", { style: { fontSize: 13, color: C.gold, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${pb.weight}kg`),
               h("span", { style: { fontSize: 11, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.reps}r`),
@@ -1162,11 +1250,12 @@
       const statsEx = (phase === PHASES.REST_EX && wo) ? wo.exercises[wo.currentExIdx + 1] : curEx;
 
       // PB data
-      const curPB = statsEx ? db.pbs?.[pbKey(statsEx.name)] : null;
+      const curPB = useMemo(() => statsEx ? pbFromHistory(db, statsEx.name) : null, [statsEx && statsEx.name, db.history, db.activeGym]);
 
       // Find the session where the PB weight was set
       const pbSession = useMemo(() => {
         if (!statsEx || !curPB) return null;
+        if (curPB.date) return { date: curPB.date };
         const nm = pbKey(statsEx.name);
         for (let i = db.history.length - 1; i >= 0; i--) {
           const ex = db.history[i].exercises?.find(e => pbKey(e.name) === nm);
@@ -1267,6 +1356,7 @@
       useEffect(() => { const id = setInterval(() => setAudioDead(!!(audio.enabled && audio.needsTap)), 1000); return () => clearInterval(id); }, []);
       // Keep the screen awake during a workout: iOS mutes music-friendly ("ambient") audio while locked.
       useEffect(() => {
+        if (IS_NATIVE) return;
         let lock = null, alive = true;
         const get = async () => {
           logEvent("screen " + document.visibilityState);
@@ -1309,6 +1399,7 @@
           if (remaining <= 3.1 && remaining > 2.9) audio.countdownPip();
           if (remaining <= 2.1 && remaining > 1.9) audio.countdownPip();
           if (remaining <= 1.1 && remaining > 0.9) audio.countdownPip();
+          if (IS_NATIVE && remaining < -1.5) { nativeCatchUp(); return; }
           if (remaining <= 0) { audio.phasePip(); advancePhase(); return; }
           setTimer(remaining);
         }, 100);
@@ -1320,6 +1411,7 @@
         function handleResume() {
           if (document.visibilityState !== "visible" || paused || phase === PHASES.DONE || !wo) return;
           const remaining = (phaseEndTime.current - Date.now()) / 1000;
+          if (IS_NATIVE) { if (remaining <= 0) nativeCatchUp(); else setTimer(remaining); return; }
           if (remaining <= 0) {
             // Phase expired while locked — advance
             audio.phasePip();
@@ -1347,6 +1439,43 @@
           pausedAtRef.current = null;
         }
       }, [paused]);
+
+      // iPhone app: the phone may have been locked through several phases while the native
+      // code kept calling them out. Move the screen to where the workout actually is.
+      function nativeCatchUp() {
+        if (!wo) return false;
+        let ph = phase, ei = wo.currentExIdx, si = wo.currentSetIdx, end = phaseEndTime.current, guard = 0;
+        const now = Date.now(), done = [];
+        while (ph !== PHASES.DONE && end <= now && guard++ < 600) {
+          const ex = wo.exercises[ei]; if (!ex) { ph = PHASES.DONE; break; }
+          if (ph === PHASES.PREP) { ph = PHASES.WORK; end += timers.work * 1000; }
+          else if (ph === PHASES.WORK) {
+            done.push([ei, si]);
+            const lastSet = si >= (ex.sets || []).length - 1, lastEx = ei >= wo.exercises.length - 1;
+            if (lastSet && lastEx) ph = PHASES.DONE;
+            else if (lastSet) { ph = PHASES.REST_EX; end += timers.restEx * 1000; }
+            else { ph = PHASES.REST_SET; end += timers.restSet * 1000; }
+          }
+          else if (ph === PHASES.REST_SET) { si++; ph = PHASES.WORK; end += timers.work * 1000; }
+          else if (ph === PHASES.REST_EX) { ei++; si = 0; ph = PHASES.PREP; end += timers.prep * 1000; }
+          else break;
+        }
+        if (!guard) return false;
+        setWo(prev => { const n = deepClone(prev); done.forEach(([a, b]) => { if (n.exercises[a] && n.exercises[a].sets[b]) n.exercises[a].sets[b].completed = true; }); n.currentExIdx = Math.min(ei, n.exercises.length - 1); n.currentSetIdx = si; return n; });
+        if (ph === PHASES.DONE) { setPhase(PHASES.DONE); setTimer(0); }
+        else { phaseEndTime.current = end; setPhase(ph); setTimer((end - now) / 1000); }
+        logEvent("caught up " + guard + " phase(s) after background");
+        return true;
+      }
+
+      // iPhone app: hand the native sound code every upcoming cue. Re-sent whenever the
+      // workout moves on, pauses, or changes, so it always matches the screen.
+      const cueKey = wo ? wo.exercises.map(e => e.name + ":" + (e.sets || []).length).join("|") : "";
+      useEffect(() => {
+        if (!IS_NATIVE) return;
+        if (!wo || paused || phase === PHASES.DONE || !wo.gymChosen) { audio.cancel(); return; }
+        audio.schedule(buildCueTimeline(wo, phase, phaseEndTime.current, timers));
+      }, [wo && wo.id, phase, paused, wo && wo.currentExIdx, wo && wo.currentSetIdx, wo && wo.gymChosen, cueKey, timers.prep, timers.work, timers.restSet, timers.restEx]);
 
       // Session clock
       useEffect(() => {
@@ -1378,7 +1507,7 @@
           const completedSet = ex.sets[wo.currentSetIdx];
           if (completedSet && !ex.isCardio) {
             const k = pbKey(ex.name);
-            const currentPB = db.pbs?.[k];
+            const currentPB = pbFromHistory(db, ex.name);
             const setW = completedSet.weight || 0;
             const setR = completedSet.reps || 0;
             if (setW > 0 && setR > 0) {
@@ -1607,7 +1736,8 @@
         setPhase(PHASES.PREP);
         setPhaseTimer(timers.prep);
         const ex = wo.exercises[exIdx];
-        if (ex) { if (audio.clips && audio.clips[audio.nameKey(ex.name)]) audio.say(["jump", audio.nameKey(ex.name)]); else audio.phasePip(); };
+        if (ex && audio.native) audio.announce("Jumping to " + ex.name);
+        else if (ex) { if (audio.clips && audio.clips[audio.nameKey(ex.name)]) audio.say(["jump", audio.nameKey(ex.name)]); else audio.phasePip(); };
         notify(`Jumped to ${wo.exercises[exIdx]?.name}`, "success");
       }
 
@@ -1722,7 +1852,7 @@
             wo.exercises.forEach(ex => {
               if (ex.isCardio) return;
               const k = pbKey(ex.name);
-              const currentPB = db.pbs?.[k];
+              const currentPB = pbFromHistory(db, ex.name);
               const bestWeight = Math.max(0, ...ex.sets.map(s => s.weight || 0));
               const bestRepsAtBestWeight = Math.max(0, ...ex.sets.filter(s => s.weight === bestWeight).map(s => s.reps || 0));
               if (bestWeight <= 0) return;
@@ -2368,24 +2498,7 @@
       const pbs = Object.entries(db.pbs || {}).sort((a, b) => b[1].maxWeight - a[1].maxWeight);
 
       // PBs set this week — scan history for sessions this week, find max per exercise
-      const weekPBs = useMemo(() => {
-        const mondayStart = thisMonday();
-        const thisWeekSessions = db.history.filter(x => new Date(x.date) >= mondayStart);
-        const results = [];
-        const allPBs = db.pbs || {};
-        thisWeekSessions.forEach(session => {
-          (session.exercises || []).forEach(ex => {
-            const k = pbKey(ex.name);
-            const pb = allPBs[k];
-            if (!pb) return;
-            const sessionMax = Math.max(0, ...(ex.sets || []).map(s => s.weight || 0));
-            if (sessionMax >= pb.maxWeight && sessionMax > 0) {
-              if (!results.find(r => r.key === k)) results.push({ key: k, name: pb._displayName || ex.name, weight: pb.maxWeight, reps: (pb.repsAtMax != null ? pb.repsAtMax : pb.maxReps) });
-            }
-          });
-        });
-        return results;
-      }, [db.history, db.pbs]);
+      const weekPBs = useMemo(() => computeWeekPBs(db, null), [db.history, db.pbs]);
 
       function runDedup() {
         const p = planNameMerge(db).map(g => ({ ...g, variants: g.variants.map(v => ({ ...v, include: v.safe })) }));
@@ -2536,7 +2649,7 @@
         weekPBs.length > 0 && h("div", { style: { background: `linear-gradient(135deg, ${C.gold}08, ${C.gold}03)`, borderRadius: 16, padding: 20, border: `1px solid ${C.gold}25`, marginBottom: 12 } },
           h("div", { style: { fontSize: 11, color: C.gold, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 } }, `🏆 This Week's PBs (${weekPBs.length})`),
           weekPBs.map(pb => h("div", { key: pb.key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: `${C.gold}08`, borderRadius: 8, marginBottom: 4, border: `1px solid ${C.gold}15` } },
-            h("span", { style: { fontSize: 13, fontWeight: 600, textTransform: "capitalize", flex: 1 } }, pb.name),
+            h("div", { style: { flex: 1 } }, h("div", { style: { fontSize: 13, fontWeight: 600, textTransform: "capitalize" } }, pb.name), h("div", { style: { fontSize: 10, color: C.textDim, marginTop: 2 } }, `was ${pb.prevW}kg × ${pb.prevR}`)),
             h("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
               h("span", { style: { fontSize: 14, color: C.gold, fontFamily: "'JetBrains Mono'", fontWeight: 700 } }, `${pb.weight}kg`),
               h("span", { style: { fontSize: 12, color: C.green, fontFamily: "'JetBrains Mono'" } }, `${pb.reps}r`),
@@ -3088,7 +3201,7 @@
     ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
 
     // --- Service Worker: nuke old, register new ---
-    if ("serviceWorker" in navigator) {
+    if (!IS_NATIVE && "serviceWorker" in navigator) {
       window.addEventListener("load", async () => {
         try {
           // First: unregister any existing SWs (kills the old cache-first one)
