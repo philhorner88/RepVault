@@ -1,4 +1,4 @@
-const CACHE_NAME = 'repvault-v50-2';
+const CACHE_NAME = 'repvault-v51';
 const CORE = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 // React is loaded from cdnjs. Without caching it here, the app shows a blank
 // screen when opened with no signal, even though index.html is cached.
